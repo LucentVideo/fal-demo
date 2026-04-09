@@ -121,7 +121,7 @@ GRID_H = 480
 class Room:
     """Single multiplayer room shared across all WebSocket handlers."""
 
-    def __init__(self, *, yolo: Any, depth: Any, seg: Any) -> None:
+    def __init__(self, *, yolo: Any, depth: Any, seg: Any, face_swapper: Any = None) -> None:
         self.peers: dict[str, PeerState] = {}
         self._peer_order: list[str] = []
         self.active_layer: str = "detection"
@@ -130,6 +130,7 @@ class Room:
         self._yolo = yolo
         self._depth = depth
         self._seg = seg
+        self.face_swapper = face_swapper
 
         self._processing_task: asyncio.Task | None = None
         self._stopped = False
@@ -264,8 +265,12 @@ class Room:
             canvas = np.zeros((GRID_H, GRID_W, 3), dtype=np.uint8)
 
             t_start = _time.perf_counter()
-            yolo_ms_total = 0.0
+            model_ms_total = 0.0
             cells_drawn = 0
+            use_face_swap = (
+                self.face_swapper is not None
+                and self.face_swapper.source_face is not None
+            )
 
             for i, (pid, peer) in enumerate(peers_with_tracks):
                 if isinstance(raw_frames[i], BaseException):
@@ -275,11 +280,14 @@ class Room:
 
                 try:
                     s = _time.perf_counter()
-                    yolo_out = self._yolo(img)
-                    yolo_ms_total += (_time.perf_counter() - s) * 1000.0
-                    annotated = compose_frame(
-                        img, layer="detection", yolo=yolo_out,
-                    )
+                    if use_face_swap:
+                        annotated = self.face_swapper(img)
+                    else:
+                        yolo_out = self._yolo(img)
+                        annotated = compose_frame(
+                            img, layer="detection", yolo=yolo_out,
+                        )
+                    model_ms_total += (_time.perf_counter() - s) * 1000.0
                 except Exception:
                     annotated = img
 
@@ -308,20 +316,21 @@ class Room:
             out_pts += 1
             await self.broadcaster.publish(new_frame)
 
+            mode_label = "face_swap" if use_face_swap else "yolo"
             self._frame_count += 1
             if self._frame_count % 30 == 1:
                 log.info(
                     f"grid frame #{self._frame_count}: "
                     f"{cells_drawn}/{n} cells, "
-                    f"yolo={yolo_ms_total:.0f}ms, total={total_ms:.0f}ms, "
+                    f"mode={mode_label}, model={model_ms_total:.0f}ms, total={total_ms:.0f}ms, "
                     f"subs={len(self.broadcaster._subscribers)}"
                 )
             if self._frame_count % self._timing_every_n == 0:
                 self._enqueue_to_all(
                     {
                         "type": "timing",
-                        "layer": "detection",
-                        "yolo_ms": yolo_ms_total,
+                        "layer": mode_label,
+                        "yolo_ms": model_ms_total if not use_face_swap else None,
                         "depth_ms": None,
                         "seg_ms": None,
                         "total_ms": total_ms,

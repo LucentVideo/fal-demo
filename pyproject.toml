@@ -17,6 +17,11 @@ dependencies = [
     "torchvision",
     "transformers",
     "pillow",
+    # Face swap
+    "insightface",
+    "onnxruntime",
+    "huggingface_hub",
+    "gfpgan",
     # Shared
     "pydantic>=2.0",
     "numpy<2",

@@ -80,8 +80,34 @@ class JoinInput(BaseModel):
     username: str
 
 
+class SetSourceFaceInput(BaseModel):
+    """Client uploads a source face image (base64 JPEG/PNG)."""
+
+    type: Literal["set_source_face"]
+    image_data: str
+
+
+class ClearSourceFaceInput(BaseModel):
+    """Client clears the current source face."""
+
+    type: Literal["clear_source_face"]
+
+
+class ToggleEnhanceInput(BaseModel):
+    """Client toggles GFPGAN face enhancement."""
+
+    type: Literal["toggle_enhance"]
+    enabled: bool
+
+
 RealtimeInputMessage = Annotated[
-    OfferInput | IceCandidateInput | LayerToggleInput | JoinInput,
+    OfferInput
+    | IceCandidateInput
+    | LayerToggleInput
+    | JoinInput
+    | SetSourceFaceInput
+    | ClearSourceFaceInput
+    | ToggleEnhanceInput,
     Field(discriminator="type"),
 ]
 
@@ -151,6 +177,14 @@ class RoomStateOutput(BaseModel):
     peers: list[PeerInfo]
 
 
+class SourceFaceSetOutput(BaseModel):
+    """Sent to all clients when the source face changes."""
+
+    type: Literal["source_face_set"]
+    success: bool
+    message: str = ""
+
+
 RealtimeOutputMessage = Annotated[
     IceServersOutput
     | AnswerOutput
@@ -159,7 +193,8 @@ RealtimeOutputMessage = Annotated[
     | TimingOutput
     | ErrorOutput
     | JoinedOutput
-    | RoomStateOutput,
+    | RoomStateOutput
+    | SourceFaceSetOutput,
     Field(discriminator="type"),
 ]
 
@@ -198,6 +233,11 @@ class MultiPerceptionWebRTC(
         "transformers==4.51.3",
         "pillow",
         "numpy<2",  # ultralytics + torch 2.6 still prefer numpy 1.x
+        # Face swap stack
+        "insightface",
+        "onnxruntime-gpu",
+        "huggingface_hub",
+        "gfpgan",
         "--extra-index-url",
         "https://download.pytorch.org/whl/cu124",
     ]
@@ -213,6 +253,7 @@ class MultiPerceptionWebRTC(
         import numpy as np
 
         from core import detect_device
+        from core.face_swap import FaceSwapper
         from core.perception import (
             DepthEstimator,
             SemanticSegmenter,
@@ -251,10 +292,19 @@ class MultiPerceptionWebRTC(
         _ = depth_model(dummy)
         _ = seg_model(dummy)
 
-        self.room = Room(yolo=yolo, depth=depth_model, seg=seg_model)
+        face_swapper = FaceSwapper(device=device)
+        face_swapper.warmup()
+
+        self.room = Room(
+            yolo=yolo, depth=depth_model, seg=seg_model,
+            face_swapper=face_swapper,
+        )
 
         self._runner_id = os.environ.get("FAL_RUNNER_ID") or str(uuid.uuid4())[:8]
-        self._loaded_models = ["yolov8n", "depth-anything-v2-small", "segformer-b0"]
+        self._loaded_models = [
+            "yolov8n", "depth-anything-v2-small", "segformer-b0",
+            "insightface-buffalo_l", "inswapper_128_fp16",
+        ]
 
     # ------------------------------------------------------------------
     # Metered TURN bootstrap — copied verbatim from upstream yolo.py.
@@ -455,6 +505,52 @@ class MultiPerceptionWebRTC(
             self.room.active_layer = payload.layer
             return True
 
+        async def handle_set_source_face(payload: SetSourceFaceInput) -> bool:
+            import base64
+            import cv2
+            import numpy as np
+
+            try:
+                raw = payload.image_data
+                if "," in raw:
+                    raw = raw.split(",", 1)[1]
+                img_bytes = base64.b64decode(raw)
+                arr = np.frombuffer(img_bytes, dtype=np.uint8)
+                img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if img is None:
+                    raise ValueError("could not decode image")
+            except Exception as exc:
+                log.info(f"app: set_source_face decode error: {exc}")
+                self.room._enqueue_to_all({
+                    "type": "source_face_set",
+                    "success": False,
+                    "message": f"Failed to decode image: {exc}",
+                })
+                return True
+
+            success = self.room.face_swapper.set_source(img)
+            self.room._enqueue_to_all({
+                "type": "source_face_set",
+                "success": success,
+                "message": "Source face set" if success else "No face detected in image",
+            })
+            log.info(f"app: set_source_face success={success}")
+            return True
+
+        async def handle_clear_source_face(_payload: ClearSourceFaceInput) -> bool:
+            self.room.face_swapper.clear_source()
+            self.room._enqueue_to_all({
+                "type": "source_face_set",
+                "success": True,
+                "message": "Source face cleared",
+            })
+            return True
+
+        async def handle_toggle_enhance(payload: ToggleEnhanceInput) -> bool:
+            self.room.face_swapper.enhance_enabled = payload.enabled
+            log.info(f"app: enhance_enabled={payload.enabled}")
+            return True
+
         async def handle_payload(payload: RealtimeInputMessage) -> bool:
             if isinstance(payload, OfferInput):
                 return await handle_offer(payload)
@@ -464,6 +560,12 @@ class MultiPerceptionWebRTC(
                 return await handle_join(payload)
             if isinstance(payload, LayerToggleInput):
                 return await handle_layer(payload)
+            if isinstance(payload, SetSourceFaceInput):
+                return await handle_set_source_face(payload)
+            if isinstance(payload, ClearSourceFaceInput):
+                return await handle_clear_source_face(payload)
+            if isinstance(payload, ToggleEnhanceInput):
+                return await handle_toggle_enhance(payload)
             return True
 
         async def input_loop() -> None:
@@ -500,6 +602,8 @@ class MultiPerceptionWebRTC(
                 )
             if msg_type == "timing":
                 return RealtimeOutput(root=TimingOutput(**msg))
+            if msg_type == "source_face_set":
+                return RealtimeOutput(root=SourceFaceSetOutput(**msg))
             return None
 
         input_task: asyncio.Task | None = None

@@ -26,10 +26,16 @@ const statusEl = document.getElementById("status");
 const layerToggleEls = document.querySelectorAll(".layer-btn");
 const hudRunnerEl = document.getElementById("hudRunner");
 const hudModelsEl = document.getElementById("hudModels");
-const hudYoloEl = document.getElementById("hudYolo");
-const hudDepthEl = document.getElementById("hudDepth");
-const hudSegEl = document.getElementById("hudSeg");
+const hudModeEl = document.getElementById("hudMode");
 const hudTotalEl = document.getElementById("hudTotal");
+
+const faceFileInput = document.getElementById("faceFileInput");
+const faceUploadZone = document.getElementById("faceUploadZone");
+const facePreview = document.getElementById("facePreview");
+const faceUploadPrompt = document.getElementById("faceUploadPrompt");
+const clearFaceBtn = document.getElementById("clearFaceBtn");
+const enhanceToggle = document.getElementById("enhanceToggle");
+const faceStatusEl = document.getElementById("faceStatus");
 
 const roomPanel = document.getElementById("roomPanel");
 const roomStatusEl = document.getElementById("roomStatus");
@@ -101,9 +107,7 @@ const getTemporaryAuthToken = async (appId) => {
 const resetHud = () => {
   hudRunnerEl.textContent = "runner: —";
   hudModelsEl.textContent = "models: —";
-  hudYoloEl.textContent = "yolo: — ms";
-  hudDepthEl.textContent = "depth: — ms";
-  hudSegEl.textContent = "seg: — ms";
+  hudModeEl.textContent = "mode: —";
   hudTotalEl.textContent = "total: — ms";
 };
 
@@ -338,9 +342,7 @@ const readWsMessage = async (data) => {
 const fmtMs = (v) => (v == null ? "—" : `${v.toFixed(0)}`);
 
 const applyTimingMessage = (msg) => {
-  hudYoloEl.textContent = `yolo: ${fmtMs(msg.yolo_ms)} ms`;
-  hudDepthEl.textContent = `depth: ${fmtMs(msg.depth_ms)} ms`;
-  hudSegEl.textContent = `seg: ${fmtMs(msg.seg_ms)} ms`;
+  hudModeEl.textContent = `mode: ${msg.layer || "—"}`;
   hudTotalEl.textContent = `total: ${fmtMs(msg.total_ms)} ms`;
 };
 
@@ -370,6 +372,53 @@ const updateRoomUI = (state) => {
     })
     .join("");
 };
+
+// ---- Face swap controls ----
+
+const uploadFaceImage = (file) => {
+  if (!file || !file.type.startsWith("image/")) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const dataUrl = reader.result;
+    facePreview.src = dataUrl;
+    facePreview.style.display = "";
+    faceUploadPrompt.style.display = "none";
+    sendWs({ type: "set_source_face", image_data: dataUrl });
+    faceStatusEl.textContent = "Uploading…";
+  };
+  reader.readAsDataURL(file);
+};
+
+faceUploadZone.addEventListener("click", () => faceFileInput.click());
+faceFileInput.addEventListener("change", () => {
+  if (faceFileInput.files.length > 0) uploadFaceImage(faceFileInput.files[0]);
+});
+
+faceUploadZone.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  faceUploadZone.classList.add("drag-over");
+});
+faceUploadZone.addEventListener("dragleave", () => {
+  faceUploadZone.classList.remove("drag-over");
+});
+faceUploadZone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  faceUploadZone.classList.remove("drag-over");
+  if (e.dataTransfer.files.length > 0) uploadFaceImage(e.dataTransfer.files[0]);
+});
+
+clearFaceBtn.addEventListener("click", () => {
+  sendWs({ type: "clear_source_face" });
+  facePreview.style.display = "none";
+  facePreview.src = "";
+  faceUploadPrompt.style.display = "";
+  clearFaceBtn.disabled = true;
+  faceStatusEl.textContent = "";
+});
+
+enhanceToggle.addEventListener("change", () => {
+  sendWs({ type: "toggle_enhance", enabled: enhanceToggle.checked });
+});
 
 // ---- Layer toggles ----
 
@@ -463,6 +512,16 @@ const connectWs = (wsUrl) => {
     } else if (msg.type === "runner_info") {
       applyRunnerInfo(msg);
       log(`Runner ${msg.runner_id} reports ${(msg.models || []).join(", ")}`);
+    } else if (msg.type === "source_face_set") {
+      if (msg.success) {
+        clearFaceBtn.disabled = false;
+        faceStatusEl.textContent = msg.message || "Source face set";
+        faceStatusEl.className = "face-status success";
+      } else {
+        faceStatusEl.textContent = msg.message || "Failed";
+        faceStatusEl.className = "face-status error";
+      }
+      log(`Face swap: ${msg.message}`);
     } else if (msg.type === "timing") {
       applyTimingMessage(msg);
     } else if (msg.type === "answer" && msg.sdp && pc) {

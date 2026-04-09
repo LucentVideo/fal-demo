@@ -3,16 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Multi-Perception WebRTC — Multiplayer</title>
+    <title>Face Swap Arena — Multiplayer WebRTC</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <div id="app">
       <header>
-        <h1>Multi-Perception WebRTC</h1>
+        <h1>Face Swap Arena</h1>
         <p>
-          YOLO detection on a single warm fal runner.
-          All players' feeds in a grid.
+          Real-time face swap on a single warm fal runner.
+          Upload a face, everyone becomes that person.
         </p>
       </header>
 
@@ -53,6 +53,25 @@
         <div class="participants" id="participants"></div>
       </section>
 
+      <section class="panel face-swap-panel" id="faceSwapPanel">
+        <h2>Face Swap</h2>
+        <div class="face-upload-row">
+          <div class="face-upload-zone" id="faceUploadZone">
+            <input type="file" id="faceFileInput" accept="image/*" hidden />
+            <img id="facePreview" class="face-preview" style="display:none" />
+            <div id="faceUploadPrompt" class="face-upload-prompt">Click or drop an image to set the source face</div>
+          </div>
+          <div class="face-controls">
+            <button id="clearFaceBtn" disabled>Clear Face</button>
+            <label class="toggle-label">
+              <input type="checkbox" id="enhanceToggle" />
+              GFPGAN Enhance
+            </label>
+          </div>
+        </div>
+        <div class="face-status" id="faceStatus"></div>
+      </section>
+
       <section class="panel">
         <h2>Video Feeds</h2>
 
@@ -84,11 +103,8 @@
         <div class="hud" id="hud">
           <span class="hud-chip" id="hudRunner">runner: —</span>
           <span class="hud-chip" id="hudModels">models: —</span>
-          <span class="hud-chip" id="hudYolo">yolo: — ms</span>
-          <span class="hud-chip" id="hudDepth">depth: — ms</span>
-          <span class="hud-chip" id="hudSeg">seg: — ms</span>
+          <span class="hud-chip" id="hudMode">mode: —</span>
           <span class="hud-chip strong" id="hudTotal">total: — ms</span>
-          <span class="hud-chip kill" id="hudHops">network hops eliminated: 3 → 0</span>
         </div>
       </section>
 
