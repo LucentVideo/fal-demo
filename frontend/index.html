@@ -11,8 +11,8 @@
       <header>
         <h1>Multi-Perception WebRTC</h1>
         <p>
-          Three perceptual models on a single warm fal runner.
-          Multiple players — one active camera at a time.
+          YOLO detection on a single warm fal runner.
+          All players' feeds in a grid.
         </p>
       </header>
 
@@ -48,9 +48,8 @@
       <section class="panel room-panel" id="roomPanel" style="display:none">
         <div class="room-header">
           <h2>Room</h2>
-          <div class="room-active-status" id="roomActiveStatus">Waiting for players…</div>
+          <div class="room-status" id="roomStatus">Waiting for players…</div>
         </div>
-        <button class="take-control-btn" id="takeControlBtn" disabled>Take Control</button>
         <div class="participants" id="participants"></div>
       </section>
 
@@ -58,10 +57,7 @@
         <h2>Video Feeds</h2>
 
         <div class="layer-toggles" id="layerToggles">
-          <button class="layer-btn active" data-layer="detection">Detection</button>
-          <button class="layer-btn" data-layer="depth">Depth</button>
-          <button class="layer-btn" data-layer="segmentation">Segmentation</button>
-          <button class="layer-btn" data-layer="composite">All composited</button>
+          <button class="layer-btn active" data-layer="detection">Detection (YOLO)</button>
         </div>
 
         <div class="video-grid">
@@ -75,7 +71,7 @@
             <video id="localVideo" autoplay playsinline muted></video>
           </div>
           <div class="video-card">
-            <div class="video-title" id="remoteVideoTitle">Perception stack (processed)</div>
+            <div class="video-title" id="remoteVideoTitle">Grid view (processed)</div>
             <div class="metric-row">
               <div class="fps" id="remoteFps">FPS: --</div>
               <div class="resolution" id="remoteRes">-- x --</div>

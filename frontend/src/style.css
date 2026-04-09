@@ -149,43 +149,10 @@ button:not(:disabled):hover {
   margin: 0;
 }
 
-.room-active-status {
+.room-status {
   font-size: 13px;
-  color: #9aa3b7;
-  transition: color 0.2s ease;
-}
-
-.room-active-status.you-active {
   color: #78f0c7;
   font-weight: 600;
-}
-
-.take-control-btn {
-  width: 100%;
-  padding: 12px 20px;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  border-radius: 12px;
-  border: 2px solid transparent;
-  background: linear-gradient(135deg, #ff6b6b, #ee5a24);
-  color: #fff;
-  cursor: pointer;
-  margin-bottom: 14px;
-  transition: transform 0.15s ease, box-shadow 0.2s ease, opacity 0.2s ease;
-}
-
-.take-control-btn:not(:disabled):hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(238, 90, 36, 0.4);
-}
-
-.take-control-btn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-  transform: none;
-  box-shadow: none;
 }
 
 .participants {
@@ -207,12 +174,6 @@ button:not(:disabled):hover {
   transition: background 0.2s ease, border-color 0.2s ease;
 }
 
-.participant.active {
-  background: rgba(120, 240, 199, 0.08);
-  border-color: rgba(120, 240, 199, 0.25);
-  color: #e8ecf5;
-}
-
 .participant.me {
   font-weight: 600;
 }
@@ -221,23 +182,12 @@ button:not(:disabled):hover {
   flex: 1;
 }
 
-.active-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: #ff4444;
-  color: #fff;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  animation: pulse-badge 1.5s ease-in-out infinite;
-}
-
-@keyframes pulse-badge {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
+.video-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #78f0c7;
+  flex-shrink: 0;
 }
 
 /* ---- Layer toggles ---- */

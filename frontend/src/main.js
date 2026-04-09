@@ -32,8 +32,7 @@ const hudSegEl = document.getElementById("hudSeg");
 const hudTotalEl = document.getElementById("hudTotal");
 
 const roomPanel = document.getElementById("roomPanel");
-const roomActiveStatus = document.getElementById("roomActiveStatus");
-const takeControlBtn = document.getElementById("takeControlBtn");
+const roomStatusEl = document.getElementById("roomStatus");
 const participantsEl = document.getElementById("participants");
 
 let ws = null;
@@ -110,10 +109,9 @@ const resetHud = () => {
 
 const resetRoomUI = () => {
   roomPanel.style.display = "none";
-  roomActiveStatus.textContent = "Waiting for players…";
+  roomStatusEl.textContent = "Waiting for players…";
   participantsEl.innerHTML = "";
-  takeControlBtn.disabled = true;
-  remoteVideoTitle.textContent = "Perception stack (processed)";
+  remoteVideoTitle.textContent = "Grid view (processed)";
   myPeerId = null;
   roomState = null;
 };
@@ -357,51 +355,21 @@ const updateRoomUI = (state) => {
   roomState = state;
   roomPanel.style.display = "";
 
-  const activePeer = state.peers.find((p) => p.is_active);
-  const iAmActive = activePeer && activePeer.peer_id === myPeerId;
-
-  if (iAmActive) {
-    roomActiveStatus.textContent = "You are the active camera";
-    roomActiveStatus.classList.add("you-active");
-    takeControlBtn.disabled = true;
-  } else if (activePeer) {
-    roomActiveStatus.textContent = `Watching: ${activePeer.username}`;
-    roomActiveStatus.classList.remove("you-active");
-    takeControlBtn.disabled = false;
-  } else {
-    roomActiveStatus.textContent = "No active camera";
-    roomActiveStatus.classList.remove("you-active");
-    takeControlBtn.disabled = false;
-  }
-
-  if (activePeer) {
-    remoteVideoTitle.textContent = iAmActive
-      ? "Your processed feed (active)"
-      : `${activePeer.username}'s processed feed`;
-  } else {
-    remoteVideoTitle.textContent = "Perception stack (processed)";
-  }
+  const count = state.peers.length;
+  roomStatusEl.textContent = `${count} player${count !== 1 ? "s" : ""} connected`;
+  remoteVideoTitle.textContent =
+    count > 0 ? `Grid view — ${count} feed${count !== 1 ? "s" : ""}` : "Grid view (processed)";
 
   participantsEl.innerHTML = state.peers
     .map((p) => {
       const isMe = p.peer_id === myPeerId;
-      const classes = [
-        "participant",
-        p.is_active ? "active" : "",
-        isMe ? "me" : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
+      const classes = ["participant", isMe ? "me" : ""].filter(Boolean).join(" ");
       const label = isMe ? `${p.username} (you)` : p.username;
-      const badge = p.is_active ? '<span class="active-badge">LIVE</span>' : "";
-      return `<div class="${classes}">${badge}<span class="participant-name">${label}</span></div>`;
+      const videoDot = p.has_video ? '<span class="video-dot"></span>' : "";
+      return `<div class="${classes}">${videoDot}<span class="participant-name">${label}</span></div>`;
     })
     .join("");
 };
-
-takeControlBtn.addEventListener("click", () => {
-  sendWs({ type: "take_control" });
-});
 
 // ---- Layer toggles ----
 
@@ -478,7 +446,7 @@ const connectWs = (wsUrl) => {
       log(`Joined room as peer ${myPeerId}`);
     } else if (msg.type === "room_state") {
       updateRoomUI(msg);
-      log(`Room: ${msg.peers.length} player(s), active: ${msg.active_peer_id || "none"}`);
+      log(`Room: ${msg.peers.length} player(s)`);
     } else if (msg.type === "iceservers" && !offerSent) {
       pendingIceServers = parseIceServers(msg.iceservers);
       log(`Using ${pendingIceServers.length} ICE server entries from signaling.`);

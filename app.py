@@ -80,14 +80,8 @@ class JoinInput(BaseModel):
     username: str
 
 
-class TakeControlInput(BaseModel):
-    """Client requests to become the active camera source."""
-
-    type: Literal["take_control"]
-
-
 RealtimeInputMessage = Annotated[
-    OfferInput | IceCandidateInput | LayerToggleInput | JoinInput | TakeControlInput,
+    OfferInput | IceCandidateInput | LayerToggleInput | JoinInput,
     Field(discriminator="type"),
 ]
 
@@ -140,7 +134,6 @@ class ErrorOutput(BaseModel):
 class PeerInfo(BaseModel):
     peer_id: str
     username: str
-    is_active: bool
     has_video: bool
 
 
@@ -156,7 +149,6 @@ class RoomStateOutput(BaseModel):
 
     type: Literal["room_state"]
     peers: list[PeerInfo]
-    active_peer_id: str | None = None
 
 
 RealtimeOutputMessage = Annotated[
@@ -459,13 +451,6 @@ class MultiPerceptionWebRTC(
             await self.room.broadcast_room_state()
             return True
 
-        async def handle_take_control(_payload: TakeControlInput) -> bool:
-            log.info(f"app: handle_take_control peer={peer_id}, current_active={self.room.active_peer_id}")
-            self.room.set_active(peer_id)
-            await self.room.broadcast_room_state()
-            log.info(f"app: handle_take_control DONE, new_active={self.room.active_peer_id}")
-            return True
-
         async def handle_layer(payload: LayerToggleInput) -> bool:
             self.room.active_layer = payload.layer
             return True
@@ -477,8 +462,6 @@ class MultiPerceptionWebRTC(
                 return await handle_icecandidate(payload)
             if isinstance(payload, JoinInput):
                 return await handle_join(payload)
-            if isinstance(payload, TakeControlInput):
-                return await handle_take_control(payload)
             if isinstance(payload, LayerToggleInput):
                 return await handle_layer(payload)
             return True
@@ -513,7 +496,6 @@ class MultiPerceptionWebRTC(
                     root=RoomStateOutput(
                         type="room_state",
                         peers=peers,
-                        active_peer_id=msg.get("active_peer_id"),
                     )
                 )
             if msg_type == "timing":
