@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Multi-Perception WebRTC — YOLO + Depth + SegFormer on one warm fal runner</title>
+    <title>Multi-Perception WebRTC — Multiplayer</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
@@ -11,8 +11,8 @@
       <header>
         <h1>Multi-Perception WebRTC</h1>
         <p>
-          Three perceptual models — YOLOv8n, Depth Anything V2 Small, SegFormer-b0 —
-          running on every frame on a single warm fal Serverless runner. Toggle layers live.
+          Three perceptual models on a single warm fal runner.
+          Multiple players — one active camera at a time.
         </p>
       </header>
 
@@ -31,14 +31,27 @@
           <label for="appId">Endpoint</label>
           <input id="appId" type="text" value="myuser/multi-perception-webrtc" />
         </div>
+        <div class="field">
+          <label for="username">Your Name</label>
+          <input id="username" type="text" placeholder="Enter a display name" />
+        </div>
       </section>
 
       <section class="panel">
         <div class="buttons">
-          <button id="startBtn">Start</button>
-          <button id="stopBtn" disabled>Stop</button>
+          <button id="startBtn">Join</button>
+          <button id="stopBtn" disabled>Leave</button>
         </div>
         <div class="status" id="status">Disconnected</div>
+      </section>
+
+      <section class="panel room-panel" id="roomPanel" style="display:none">
+        <div class="room-header">
+          <h2>Room</h2>
+          <div class="room-active-status" id="roomActiveStatus">Waiting for players…</div>
+        </div>
+        <button class="take-control-btn" id="takeControlBtn" disabled>Take Control</button>
+        <div class="participants" id="participants"></div>
       </section>
 
       <section class="panel">
@@ -62,7 +75,7 @@
             <video id="localVideo" autoplay playsinline muted></video>
           </div>
           <div class="video-card">
-            <div class="video-title">Perception stack (processed)</div>
+            <div class="video-title" id="remoteVideoTitle">Perception stack (processed)</div>
             <div class="metric-row">
               <div class="fps" id="remoteFps">FPS: --</div>
               <div class="resolution" id="remoteRes">-- x --</div>

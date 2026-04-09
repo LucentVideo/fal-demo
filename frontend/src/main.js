@@ -8,10 +8,12 @@ const backendUrlInput = document.getElementById("backendUrl");
 const backendUrlField = document.getElementById("backendUrlField");
 const appIdField = document.getElementById("appIdField");
 const appIdInput = document.getElementById("appId");
+const usernameInput = document.getElementById("username");
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
 const localVideo = document.getElementById("localVideo");
 const remoteVideo = document.getElementById("remoteVideo");
+const remoteVideoTitle = document.getElementById("remoteVideoTitle");
 const localFpsEl = document.getElementById("localFps");
 const remoteFpsEl = document.getElementById("remoteFps");
 const localResEl = document.getElementById("localRes");
@@ -21,7 +23,6 @@ const remoteBitrateEl = document.getElementById("remoteBitrate");
 const logEl = document.getElementById("log");
 const statusEl = document.getElementById("status");
 
-// Layer toggles + HUD — extension over upstream yolo_webcam_webrtc.
 const layerToggleEls = document.querySelectorAll(".layer-btn");
 const hudRunnerEl = document.getElementById("hudRunner");
 const hudModelsEl = document.getElementById("hudModels");
@@ -29,6 +30,11 @@ const hudYoloEl = document.getElementById("hudYolo");
 const hudDepthEl = document.getElementById("hudDepth");
 const hudSegEl = document.getElementById("hudSeg");
 const hudTotalEl = document.getElementById("hudTotal");
+
+const roomPanel = document.getElementById("roomPanel");
+const roomActiveStatus = document.getElementById("roomActiveStatus");
+const takeControlBtn = document.getElementById("takeControlBtn");
+const participantsEl = document.getElementById("participants");
 
 let ws = null;
 let pc = null;
@@ -39,6 +45,9 @@ let localFpsStop = null;
 let remoteFpsStop = null;
 let bitrateStop = null;
 let activeLayer = "detection";
+
+let myPeerId = null;
+let roomState = null;
 
 const isLocalMode = () => localModeCheckbox.checked;
 
@@ -99,6 +108,16 @@ const resetHud = () => {
   hudTotalEl.textContent = "total: — ms";
 };
 
+const resetRoomUI = () => {
+  roomPanel.style.display = "none";
+  roomActiveStatus.textContent = "Waiting for players…";
+  participantsEl.innerHTML = "";
+  takeControlBtn.disabled = true;
+  remoteVideoTitle.textContent = "Perception stack (processed)";
+  myPeerId = null;
+  roomState = null;
+};
+
 const stop = () => {
   if (ws) {
     ws.close();
@@ -133,6 +152,7 @@ const stop = () => {
   localBitrateEl.textContent = "Up: -- Mbps";
   remoteBitrateEl.textContent = "Down: -- Mbps";
   resetHud();
+  resetRoomUI();
   setStatus("Disconnected");
 };
 
@@ -331,6 +351,60 @@ const applyRunnerInfo = (msg) => {
   hudModelsEl.textContent = `models: ${(msg.models || []).length} loaded`;
 };
 
+// ---- Room UI ----
+
+const updateRoomUI = (state) => {
+  roomState = state;
+  roomPanel.style.display = "";
+
+  const activePeer = state.peers.find((p) => p.is_active);
+  const iAmActive = activePeer && activePeer.peer_id === myPeerId;
+
+  if (iAmActive) {
+    roomActiveStatus.textContent = "You are the active camera";
+    roomActiveStatus.classList.add("you-active");
+    takeControlBtn.disabled = true;
+  } else if (activePeer) {
+    roomActiveStatus.textContent = `Watching: ${activePeer.username}`;
+    roomActiveStatus.classList.remove("you-active");
+    takeControlBtn.disabled = false;
+  } else {
+    roomActiveStatus.textContent = "No active camera";
+    roomActiveStatus.classList.remove("you-active");
+    takeControlBtn.disabled = false;
+  }
+
+  if (activePeer) {
+    remoteVideoTitle.textContent = iAmActive
+      ? "Your processed feed (active)"
+      : `${activePeer.username}'s processed feed`;
+  } else {
+    remoteVideoTitle.textContent = "Perception stack (processed)";
+  }
+
+  participantsEl.innerHTML = state.peers
+    .map((p) => {
+      const isMe = p.peer_id === myPeerId;
+      const classes = [
+        "participant",
+        p.is_active ? "active" : "",
+        isMe ? "me" : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      const label = isMe ? `${p.username} (you)` : p.username;
+      const badge = p.is_active ? '<span class="active-badge">LIVE</span>' : "";
+      return `<div class="${classes}">${badge}<span class="participant-name">${label}</span></div>`;
+    })
+    .join("");
+};
+
+takeControlBtn.addEventListener("click", () => {
+  sendWs({ type: "take_control" });
+});
+
+// ---- Layer toggles ----
+
 const setActiveLayer = (layer) => {
   activeLayer = layer;
   layerToggleEls.forEach((btn) => {
@@ -349,9 +423,16 @@ layerToggleEls.forEach((btn) => {
   });
 });
 
+// ---- Connection ----
+
 const buildLocalWsUrl = () => {
   const base = backendUrlInput.value.trim().replace(/\/+$/, "");
   return `${base}/realtime`;
+};
+
+const getUsername = () => {
+  const val = usernameInput.value.trim();
+  return val || `Player-${Math.random().toString(36).slice(2, 6)}`;
 };
 
 const connectWs = (wsUrl) => {
@@ -382,6 +463,7 @@ const connectWs = (wsUrl) => {
   ws.onopen = async () => {
     setStatus("Connected");
     log("WebSocket open.");
+    sendWs({ type: "join", username: getUsername() });
   };
 
   ws.onmessage = async (event) => {
@@ -391,7 +473,13 @@ const connectWs = (wsUrl) => {
       return;
     }
 
-    if (msg.type === "iceservers" && !offerSent) {
+    if (msg.type === "joined") {
+      myPeerId = msg.peer_id;
+      log(`Joined room as peer ${myPeerId}`);
+    } else if (msg.type === "room_state") {
+      updateRoomUI(msg);
+      log(`Room: ${msg.peers.length} player(s), active: ${msg.active_peer_id || "none"}`);
+    } else if (msg.type === "iceservers" && !offerSent) {
       pendingIceServers = parseIceServers(msg.iceservers);
       log(`Using ${pendingIceServers.length} ICE server entries from signaling.`);
       try {
@@ -452,6 +540,7 @@ startBtn.addEventListener("click", async () => {
   stopBtn.disabled = false;
   logEl.textContent = "";
   resetHud();
+  resetRoomUI();
 
   if (isLocalMode()) {
     const wsUrl = buildLocalWsUrl();

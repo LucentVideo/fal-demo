@@ -1,0 +1,300 @@
+"""Multiplayer room: peer tracking, frame broadcasting, and the shared
+processing loop that feeds all connected viewers.
+
+The Room holds a single FrameBroadcaster. One background asyncio task
+reads frames from the active user's inbound WebRTC track, runs perception
+inference, and publishes processed VideoFrames to all subscribers.  Each
+connected peer gets a BroadcastTrack whose ``recv()`` returns the latest
+published frame.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from contextlib import suppress
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass
+class PeerState:
+    """Mutable state for a single connected peer."""
+
+    peer_id: str
+    username: str
+    video_track: Any = None
+    outgoing_queue: asyncio.Queue | None = None
+
+
+class FrameBroadcaster:
+    """Publish-subscribe fan-out for processed video frames.
+
+    Each subscriber gets its own ``asyncio.Event`` that is set whenever a
+    new frame is published. Late subscribers always see the latest frame.
+    """
+
+    def __init__(self) -> None:
+        self._frame: Any = None
+        self._frame_id: int = 0
+        self._subscribers: list[BroadcastSubscriber] = []
+
+    async def publish(self, frame: Any) -> None:
+        self._frame = frame
+        self._frame_id += 1
+        for sub in self._subscribers:
+            sub._notify()
+
+    def subscribe(self) -> BroadcastSubscriber:
+        sub = BroadcastSubscriber(self)
+        self._subscribers.append(sub)
+        return sub
+
+    def unsubscribe(self, sub: BroadcastSubscriber) -> None:
+        sub.close()
+        with suppress(ValueError):
+            self._subscribers.remove(sub)
+
+
+class BroadcastSubscriber:
+    """Receives the latest frame from a FrameBroadcaster."""
+
+    def __init__(self, broadcaster: FrameBroadcaster) -> None:
+        self._broadcaster = broadcaster
+        self._last_seen_id: int = 0
+        self._event = asyncio.Event()
+        self._closed = False
+
+    def _notify(self) -> None:
+        self._event.set()
+
+    def close(self) -> None:
+        self._closed = True
+        self._event.set()
+
+    async def recv(self) -> Any:
+        while self._last_seen_id >= self._broadcaster._frame_id:
+            if self._closed:
+                raise Exception("subscriber closed")
+            self._event.clear()
+            await self._event.wait()
+        if self._closed:
+            raise Exception("subscriber closed")
+        self._last_seen_id = self._broadcaster._frame_id
+        return self._broadcaster._frame
+
+
+def create_broadcast_track(subscriber: BroadcastSubscriber):
+    """Factory: creates an aiortc MediaStreamTrack fed by a subscriber."""
+    from aiortc.mediastreams import MediaStreamTrack
+
+    class BroadcastTrack(MediaStreamTrack):
+        kind = "video"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._sub = subscriber
+
+        async def recv(self):
+            return await self._sub.recv()
+
+        def stop(self) -> None:
+            super().stop()
+            self._sub.close()
+
+    return BroadcastTrack()
+
+
+class Room:
+    """Single multiplayer room shared across all WebSocket handlers."""
+
+    def __init__(self, *, yolo: Any, depth: Any, seg: Any) -> None:
+        self.peers: dict[str, PeerState] = {}
+        self._peer_order: list[str] = []
+        self.active_peer_id: str | None = None
+        self.active_layer: str = "detection"
+        self.broadcaster = FrameBroadcaster()
+
+        self._yolo = yolo
+        self._depth = depth
+        self._seg = seg
+
+        self._processing_task: asyncio.Task | None = None
+        self._stopped = False
+        self._frame_count = 0
+        self._timing_every_n = 5
+
+    # ---- peer management ------------------------------------------------
+
+    def add_peer(
+        self, peer_id: str, username: str, outgoing_queue: asyncio.Queue
+    ) -> None:
+        self.peers[peer_id] = PeerState(
+            peer_id=peer_id,
+            username=username,
+            outgoing_queue=outgoing_queue,
+        )
+        self._peer_order.append(peer_id)
+        if self.active_peer_id is None:
+            self.active_peer_id = peer_id
+        self._ensure_processing()
+
+    def remove_peer(self, peer_id: str) -> None:
+        self.peers.pop(peer_id, None)
+        with suppress(ValueError):
+            self._peer_order.remove(peer_id)
+        if self.active_peer_id == peer_id:
+            self.active_peer_id = (
+                self._peer_order[0] if self._peer_order else None
+            )
+        if not self.peers:
+            self._stop_processing()
+
+    def set_peer_track(self, peer_id: str, track: Any) -> None:
+        peer = self.peers.get(peer_id)
+        if peer is not None:
+            peer.video_track = track
+
+    def set_active(self, peer_id: str) -> None:
+        if peer_id in self.peers:
+            self.active_peer_id = peer_id
+
+    # ---- state & broadcasting -------------------------------------------
+
+    def get_state_dict(self) -> dict:
+        return {
+            "type": "room_state",
+            "peers": [
+                {
+                    "peer_id": p.peer_id,
+                    "username": p.username,
+                    "is_active": p.peer_id == self.active_peer_id,
+                    "has_video": p.video_track is not None,
+                }
+                for p in (
+                    self.peers[pid]
+                    for pid in self._peer_order
+                    if pid in self.peers
+                )
+            ],
+            "active_peer_id": self.active_peer_id,
+        }
+
+    def _enqueue_to_all(self, msg: Any) -> None:
+        for peer in self.peers.values():
+            if peer.outgoing_queue is not None:
+                with suppress(Exception):
+                    peer.outgoing_queue.put_nowait(msg)
+
+    async def broadcast_room_state(self) -> None:
+        self._enqueue_to_all(self.get_state_dict())
+
+    # ---- processing loop ------------------------------------------------
+
+    def _get_active_source_track(self) -> Any | None:
+        if self.active_peer_id is None:
+            return None
+        peer = self.peers.get(self.active_peer_id)
+        return peer.video_track if peer else None
+
+    def _ensure_processing(self) -> None:
+        if self._processing_task is None or self._processing_task.done():
+            self._stopped = False
+            self._processing_task = asyncio.ensure_future(
+                self._processing_loop()
+            )
+
+    def _stop_processing(self) -> None:
+        self._stopped = True
+        if self._processing_task is not None:
+            self._processing_task.cancel()
+            self._processing_task = None
+
+    async def _processing_loop(self) -> None:
+        import time as _time
+        from fractions import Fraction
+
+        import numpy as np
+        from av import VideoFrame
+
+        from core.compose import compose_frame
+
+        idle_pts = 0
+
+        while not self._stopped:
+            source_track = self._get_active_source_track()
+
+            if source_track is None:
+                black = np.zeros((480, 640, 3), dtype=np.uint8)
+                frame = VideoFrame.from_ndarray(black, format="bgr24")
+                frame.pts = idle_pts
+                frame.time_base = Fraction(1, 30)
+                idle_pts += 1
+                await self.broadcaster.publish(frame)
+                await asyncio.sleep(0.1)
+                continue
+
+            try:
+                raw_frame = await asyncio.wait_for(
+                    source_track.recv(), timeout=1.0
+                )
+            except asyncio.TimeoutError:
+                continue
+            except Exception:
+                await asyncio.sleep(0.033)
+                continue
+
+            img = raw_frame.to_ndarray(format="bgr24")
+            layer = self.active_layer
+
+            yolo_out = depth_out = seg_out = None
+            yolo_ms = depth_ms = seg_ms = None
+
+            try:
+                t_start = _time.perf_counter()
+
+                if layer in ("detection", "composite"):
+                    s = _time.perf_counter()
+                    yolo_out = self._yolo(img)
+                    yolo_ms = (_time.perf_counter() - s) * 1000.0
+
+                if layer in ("depth", "composite"):
+                    s = _time.perf_counter()
+                    depth_out = self._depth(img)
+                    depth_ms = (_time.perf_counter() - s) * 1000.0
+
+                if layer in ("segmentation", "composite"):
+                    s = _time.perf_counter()
+                    seg_out = self._seg(img)
+                    seg_ms = (_time.perf_counter() - s) * 1000.0
+
+                total_ms = (_time.perf_counter() - t_start) * 1000.0
+
+                annotated = compose_frame(
+                    img,
+                    layer=layer,
+                    yolo=yolo_out,
+                    depth=depth_out,
+                    seg=seg_out,
+                )
+            except Exception as exc:
+                print(f"room: processing error: {exc}")
+                annotated = img
+                total_ms = 0.0
+
+            new_frame = VideoFrame.from_ndarray(annotated, format="bgr24")
+            new_frame.pts = raw_frame.pts
+            new_frame.time_base = raw_frame.time_base
+            await self.broadcaster.publish(new_frame)
+
+            self._frame_count += 1
+            if self._frame_count % self._timing_every_n == 0:
+                self._enqueue_to_all(
+                    {
+                        "type": "timing",
+                        "layer": layer,
+                        "yolo_ms": yolo_ms,
+                        "depth_ms": depth_ms,
+                        "seg_ms": seg_ms,
+                        "total_ms": total_ms,
+                    }
+                )

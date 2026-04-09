@@ -132,6 +132,116 @@ button:not(:disabled):hover {
   color: #78f0c7;
 }
 
+/* ---- Room panel ---- */
+
+.room-panel {
+  border-color: rgba(120, 240, 199, 0.15);
+}
+
+.room-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 14px;
+}
+
+.room-header h2 {
+  margin: 0;
+}
+
+.room-active-status {
+  font-size: 13px;
+  color: #9aa3b7;
+  transition: color 0.2s ease;
+}
+
+.room-active-status.you-active {
+  color: #78f0c7;
+  font-weight: 600;
+}
+
+.take-control-btn {
+  width: 100%;
+  padding: 12px 20px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: 12px;
+  border: 2px solid transparent;
+  background: linear-gradient(135deg, #ff6b6b, #ee5a24);
+  color: #fff;
+  cursor: pointer;
+  margin-bottom: 14px;
+  transition: transform 0.15s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+}
+
+.take-control-btn:not(:disabled):hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(238, 90, 36, 0.4);
+}
+
+.take-control-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.participants {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.participant {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 14px;
+  color: #cfd6e8;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.participant.active {
+  background: rgba(120, 240, 199, 0.08);
+  border-color: rgba(120, 240, 199, 0.25);
+  color: #e8ecf5;
+}
+
+.participant.me {
+  font-weight: 600;
+}
+
+.participant-name {
+  flex: 1;
+}
+
+.active-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #ff4444;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  animation: pulse-badge 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-badge {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* ---- Layer toggles ---- */
+
 .layer-toggles {
   display: flex;
   flex-wrap: wrap;
@@ -162,6 +272,8 @@ button:not(:disabled):hover {
   box-shadow: 0 4px 12px rgba(244, 196, 91, 0.35);
 }
 
+/* ---- Video ---- */
+
 .video-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -181,6 +293,7 @@ button:not(:disabled):hover {
   letter-spacing: 0.08em;
   color: #9db0d9;
   margin-bottom: 8px;
+  transition: color 0.2s ease;
 }
 
 .fps {
@@ -217,6 +330,8 @@ video {
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+/* ---- HUD ---- */
+
 .hud {
   margin-top: 14px;
   display: flex;
@@ -244,6 +359,8 @@ video {
   border-color: rgba(120, 240, 199, 0.45);
 }
 
+/* ---- Logs ---- */
+
 .log {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   background: #0b0f1a;
@@ -254,6 +371,8 @@ video {
   color: #d2d7e6;
 }
 
+/* ---- Responsive ---- */
+
 @media (max-width: 720px) {
   .field.inline {
     flex-direction: column;
@@ -262,5 +381,10 @@ video {
 
   .buttons {
     flex-direction: column;
+  }
+
+  .room-header {
+    flex-direction: column;
+    gap: 6px;
   }
 }
