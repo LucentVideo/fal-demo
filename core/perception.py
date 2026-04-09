@@ -97,7 +97,7 @@ class DepthEstimator:
             model_id, dtype=dtype,
         ).to(self._torch_device).eval()
         if self.device == "cuda":
-            self.model = torch.compile(self.model, mode="max-autotune")
+            self.model = torch.compile(self.model, mode="reduce-overhead")
 
     def __call__(self, frame_bgr):
         import cv2
@@ -163,7 +163,7 @@ class SemanticSegmenter:
             model_id, dtype=dtype,
         ).to(self._torch_device).eval()
         if self.device == "cuda":
-            self.model = torch.compile(self.model, mode="max-autotune")
+            self.model = torch.compile(self.model, mode="reduce-overhead")
         self._id2label = self.model.config.id2label
 
     def __call__(self, frame_bgr) -> list[SegRegion]:
