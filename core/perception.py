@@ -46,7 +46,10 @@ class YoloDetector:
         self.device = device or detect_device()
 
     def __call__(self, frame_bgr) -> list[YoloBox]:
-        result = self.model(frame_bgr, verbose=False, device=self.device)[0]
+        result = self.model(
+            frame_bgr, verbose=False, device=self.device,
+            half=(self.device == "cuda"),
+        )[0]
         boxes: list[YoloBox] = []
         names = result.names
         if result.boxes is None:
@@ -88,7 +91,13 @@ class DepthEstimator:
         self._torch_device = torch.device(self.device)
         model_id = "depth-anything/Depth-Anything-V2-Small-hf"
         self.processor = AutoImageProcessor.from_pretrained(model_id)
-        self.model = AutoModelForDepthEstimation.from_pretrained(model_id).to(self._torch_device).eval()
+        self._use_fp16 = self.device == "cuda"
+        dtype = torch.float16 if self._use_fp16 else torch.float32
+        self.model = AutoModelForDepthEstimation.from_pretrained(
+            model_id, torch_dtype=dtype,
+        ).to(self._torch_device).eval()
+        if self.device == "cuda":
+            self.model = torch.compile(self.model, mode="reduce-overhead")
 
     def __call__(self, frame_bgr):
         import cv2
@@ -98,12 +107,15 @@ class DepthEstimator:
 
         rgb = frame_bgr[:, :, ::-1]
         pil = Image.fromarray(rgb)
-        inputs = self.processor(images=pil, return_tensors="pt").to(self._torch_device)
+        inputs = self.processor(images=pil, return_tensors="pt")
+        inputs = {k: v.to(device=self._torch_device, dtype=torch.float16 if self._use_fp16 else torch.float32)
+                  if v.is_floating_point() else v.to(self._torch_device)
+                  for k, v in inputs.items()}
 
-        with torch.no_grad():
+        with torch.inference_mode():
             depth_tensor = self.model(**inputs).predicted_depth
 
-        depth = depth_tensor.squeeze().cpu().numpy().astype(np.float32)
+        depth = depth_tensor.squeeze().float().cpu().numpy()
 
         h, w = frame_bgr.shape[:2]
         if depth.shape != (h, w):
@@ -143,22 +155,30 @@ class SemanticSegmenter:
 
         self.device = device or detect_device()
         self._torch_device = torch.device(self.device)
+        self._use_fp16 = self.device == "cuda"
+        dtype = torch.float16 if self._use_fp16 else torch.float32
         model_id = "nvidia/segformer-b0-finetuned-ade-512-512"
         self.processor = AutoImageProcessor.from_pretrained(model_id)
-        self.model = AutoModelForSemanticSegmentation.from_pretrained(model_id).to(self._torch_device).eval()
+        self.model = AutoModelForSemanticSegmentation.from_pretrained(
+            model_id, torch_dtype=dtype,
+        ).to(self._torch_device).eval()
+        if self.device == "cuda":
+            self.model = torch.compile(self.model, mode="reduce-overhead")
         self._id2label = self.model.config.id2label
 
     def __call__(self, frame_bgr) -> list[SegRegion]:
-        import cv2
         import numpy as np
         import torch
         from PIL import Image
 
         rgb = frame_bgr[:, :, ::-1]
         pil = Image.fromarray(rgb)
-        inputs = self.processor(images=pil, return_tensors="pt").to(self._torch_device)
+        inputs = self.processor(images=pil, return_tensors="pt")
+        inputs = {k: v.to(device=self._torch_device, dtype=torch.float16 if self._use_fp16 else torch.float32)
+                  if v.is_floating_point() else v.to(self._torch_device)
+                  for k, v in inputs.items()}
 
-        with torch.no_grad():
+        with torch.inference_mode():
             logits = self.model(**inputs).logits
 
         h, w = frame_bgr.shape[:2]
