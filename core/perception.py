@@ -94,10 +94,10 @@ class DepthEstimator:
         self._use_fp16 = self.device == "cuda"
         dtype = torch.float16 if self._use_fp16 else torch.float32
         self.model = AutoModelForDepthEstimation.from_pretrained(
-            model_id, torch_dtype=dtype,
+            model_id, dtype=dtype,
         ).to(self._torch_device).eval()
         if self.device == "cuda":
-            self.model = torch.compile(self.model, mode="reduce-overhead")
+            self.model = torch.compile(self.model, mode="max-autotune")
 
     def __call__(self, frame_bgr):
         import cv2
@@ -160,10 +160,10 @@ class SemanticSegmenter:
         model_id = "nvidia/segformer-b0-finetuned-ade-512-512"
         self.processor = AutoImageProcessor.from_pretrained(model_id)
         self.model = AutoModelForSemanticSegmentation.from_pretrained(
-            model_id, torch_dtype=dtype,
+            model_id, dtype=dtype,
         ).to(self._torch_device).eval()
         if self.device == "cuda":
-            self.model = torch.compile(self.model, mode="reduce-overhead")
+            self.model = torch.compile(self.model, mode="max-autotune")
         self._id2label = self.model.config.id2label
 
     def __call__(self, frame_bgr) -> list[SegRegion]:
