@@ -31,10 +31,19 @@ CUDA-bound on the same GPU and would serialize on the same stream under
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import suppress
 from typing import Annotated, AsyncIterator, Literal
 
 import fal
+
+log = logging.getLogger("app")
+log.setLevel(logging.DEBUG)
+if not log.handlers:
+    _h = logging.StreamHandler()
+    _h.setLevel(logging.DEBUG)
+    _h.setFormatter(logging.Formatter("%(name)s: %(message)s"))
+    log.addHandler(_h)
 from fastapi import WebSocketDisconnect
 from pydantic import BaseModel, Field, RootModel, TypeAdapter, ValidationError
 
@@ -400,6 +409,7 @@ class MultiPerceptionWebRTC(
 
         @pc.on("track")
         def on_track(track):
+            log.info(f"app: on_track peer={peer_id}, kind={track.kind}, registered={peer_id in self.room.peers}")
             if track.kind == "video":
                 incoming_video_ref["track"] = track
                 if peer_id in self.room.peers:
@@ -407,6 +417,7 @@ class MultiPerceptionWebRTC(
                 sub = self.room.broadcaster.subscribe()
                 subscriber_ref["sub"] = sub
                 pc.addTrack(create_broadcast_track(sub))
+                log.info(f"app: on_track peer={peer_id} — subscribed to broadcaster, broadcast_track added to PC")
             else:
                 asyncio.ensure_future(blackhole.consume(track))
 
@@ -439,6 +450,7 @@ class MultiPerceptionWebRTC(
 
         async def handle_join(payload: JoinInput) -> bool:
             nonlocal peer_registered
+            log.info(f"app: handle_join peer={peer_id}, username={payload.username}, has_track={incoming_video_ref['track'] is not None}")
             self.room.add_peer(peer_id, payload.username, outgoing)
             peer_registered = True
             if incoming_video_ref["track"] is not None:
@@ -448,8 +460,10 @@ class MultiPerceptionWebRTC(
             return True
 
         async def handle_take_control(_payload: TakeControlInput) -> bool:
+            log.info(f"app: handle_take_control peer={peer_id}, current_active={self.room.active_peer_id}")
             self.room.set_active(peer_id)
             await self.room.broadcast_room_state()
+            log.info(f"app: handle_take_control DONE, new_active={self.room.active_peer_id}")
             return True
 
         async def handle_layer(payload: LayerToggleInput) -> bool:
