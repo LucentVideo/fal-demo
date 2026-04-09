@@ -3,6 +3,10 @@ import { decode, encode } from "@msgpack/msgpack";
 const TOKEN_EXPIRATION_SECONDS = 120;
 const DEFAULT_ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
 
+const localModeCheckbox = document.getElementById("localMode");
+const backendUrlInput = document.getElementById("backendUrl");
+const backendUrlField = document.getElementById("backendUrlField");
+const appIdField = document.getElementById("appIdField");
 const appIdInput = document.getElementById("appId");
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
@@ -35,6 +39,15 @@ let localFpsStop = null;
 let remoteFpsStop = null;
 let bitrateStop = null;
 let activeLayer = "detection";
+
+const isLocalMode = () => localModeCheckbox.checked;
+
+const syncModeFields = () => {
+  backendUrlField.style.display = isLocalMode() ? "" : "none";
+  appIdField.style.display = isLocalMode() ? "none" : "";
+};
+localModeCheckbox.addEventListener("change", syncModeFields);
+syncModeFields();
 
 const log = (msg) => {
   console.log(msg);
@@ -336,43 +349,14 @@ layerToggleEls.forEach((btn) => {
   });
 });
 
-startBtn.addEventListener("click", async () => {
-  if (started) return;
-  started = true;
-  startBtn.disabled = true;
-  stopBtn.disabled = false;
-  logEl.textContent = "";
-  resetHud();
+const buildLocalWsUrl = () => {
+  const base = backendUrlInput.value.trim().replace(/\/+$/, "");
+  return `${base}/realtime`;
+};
 
-  const appId = normalizeAppId(appIdInput.value.trim());
-  if (!appId) {
-    log("Missing endpoint.");
-    stop();
-    startBtn.disabled = false;
-    stopBtn.disabled = true;
-    started = false;
-    return;
-  }
-
-  try {
-    authToken = await getTemporaryAuthToken(appId);
-  } catch (err) {
-    log(`Failed to fetch token: ${err.message || err}`);
-    stop();
-    startBtn.disabled = false;
-    stopBtn.disabled = true;
-    started = false;
-    return;
-  }
-
-  const wsUrl = buildWsUrl(appId, authToken);
+const connectWs = (wsUrl) => {
   ws = new WebSocket(wsUrl);
   ws.binaryType = "arraybuffer";
-
-  ws.onopen = async () => {
-    setStatus("Connected");
-    log("WebSocket open.");
-  };
 
   let pendingIceServers = DEFAULT_ICE_SERVERS;
   let offerSent = false;
@@ -386,8 +370,6 @@ startBtn.addEventListener("click", async () => {
       await ensurePeer(pendingIceServers);
       await attachLocalStream();
       await sendOffer();
-      // Send the currently-selected layer once the signaling side is up
-      // so the server's MultiPerceptionTrack starts in the right mode.
       sendWs({ type: "layer", layer: activeLayer });
     } catch (err) {
       offerSent = false;
@@ -395,6 +377,11 @@ startBtn.addEventListener("click", async () => {
     } finally {
       negotiatingOffer = false;
     }
+  };
+
+  ws.onopen = async () => {
+    setStatus("Connected");
+    log("WebSocket open.");
   };
 
   ws.onmessage = async (event) => {
@@ -456,6 +443,46 @@ startBtn.addEventListener("click", async () => {
     stopBtn.disabled = true;
     started = false;
   };
+};
+
+startBtn.addEventListener("click", async () => {
+  if (started) return;
+  started = true;
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  logEl.textContent = "";
+  resetHud();
+
+  if (isLocalMode()) {
+    const wsUrl = buildLocalWsUrl();
+    log(`Local mode → ${wsUrl}`);
+    connectWs(wsUrl);
+    return;
+  }
+
+  const appId = normalizeAppId(appIdInput.value.trim());
+  if (!appId) {
+    log("Missing endpoint.");
+    stop();
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    started = false;
+    return;
+  }
+
+  try {
+    authToken = await getTemporaryAuthToken(appId);
+  } catch (err) {
+    log(`Failed to fetch token: ${err.message || err}`);
+    stop();
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    started = false;
+    return;
+  }
+
+  const wsUrl = buildWsUrl(appId, authToken);
+  connectWs(wsUrl);
 });
 
 stopBtn.addEventListener("click", () => {

@@ -33,12 +33,13 @@ class YoloDetector:
     volume. Override with ``weights_path`` for local smoke tests.
     """
 
-    def __init__(self, weights_path: str = "/data/yolov8n.pt", device: str = "cuda"):
+    def __init__(self, weights_path: str = "yolov8n.pt", device: str | None = None):
         from ultralytics import YOLO
 
+        from core import detect_device
+
         self.model = YOLO(weights_path)
-        # ultralytics honors device on the call site, not on load.
-        self.device = device
+        self.device = device or detect_device()
 
     def __call__(self, frame_bgr) -> list[YoloBox]:
         result = self.model(frame_bgr, verbose=False, device=self.device)[0]
@@ -75,14 +76,17 @@ class DepthEstimator:
     fidelity and normalize to the frame-level min/max.
     """
 
-    def __init__(self, device: str = "cuda"):
+    def __init__(self, device: str | None = None):
         from transformers import pipeline
 
-        device_idx = 0 if device == "cuda" else -1
+        from core import detect_device
+
+        device = device or detect_device()
+        device_arg = 0 if device == "cuda" else device
         self.pipe = pipeline(
             task="depth-estimation",
             model="depth-anything/Depth-Anything-V2-Small-hf",
-            device=device_idx,
+            device=device_arg,
         )
 
     def __call__(self, frame_bgr):
@@ -133,14 +137,17 @@ class SemanticSegmenter:
     boolean mask the size of the input frame.
     """
 
-    def __init__(self, device: str = "cuda"):
+    def __init__(self, device: str | None = None):
         from transformers import pipeline
 
-        device_idx = 0 if device == "cuda" else -1
+        from core import detect_device
+
+        device = device or detect_device()
+        device_arg = 0 if device == "cuda" else device
         self.pipe = pipeline(
             task="image-segmentation",
             model="nvidia/segformer-b0-finetuned-ade-512-512",
-            device=device_idx,
+            device=device_arg,
         )
 
     def __call__(self, frame_bgr) -> list[SegRegion]:

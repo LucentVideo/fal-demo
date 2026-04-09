@@ -178,6 +178,7 @@ class MultiPerceptionWebRTC(
 
         import numpy as np
 
+        from core import detect_device
         from core.perception import (
             DepthEstimator,
             SemanticSegmenter,
@@ -195,15 +196,21 @@ class MultiPerceptionWebRTC(
         if missing:
             raise RuntimeError(
                 f"Missing required Metered TURN env vars: {', '.join(missing)}. "
-                "Set them via `fal secrets set` before starting the realtime app."
+                "Set them via `fal secrets set` or .env before starting the realtime app."
             )
 
-        yolo_weights = os.getenv("YOLO_MODEL_PATH", "/data/yolov8n.pt")
+        fal_path = "/data/yolov8n.pt"
+        yolo_weights = os.getenv(
+            "YOLO_MODEL_PATH",
+            fal_path if os.path.exists(fal_path) else "yolov8n.pt",
+        )
 
-        # Load all three perceptual models onto the same GPU.
-        self.yolo = YoloDetector(weights_path=yolo_weights, device="cuda")
-        self.depth = DepthEstimator(device="cuda")
-        self.seg = SemanticSegmenter(device="cuda")
+        device = detect_device()
+        print(f"setup: device={device}, yolo_weights={yolo_weights}")
+
+        self.yolo = YoloDetector(weights_path=yolo_weights, device=device)
+        self.depth = DepthEstimator(device=device)
+        self.seg = SemanticSegmenter(device=device)
 
         # Warmup: run a black frame through each so CUDA kernels JIT-compile
         # before the first user frame. Mirrors the warmup idiom in sana.py's

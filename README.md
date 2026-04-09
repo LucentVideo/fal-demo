@@ -12,7 +12,7 @@ toggle row above the processed panel. End-to-end latency is roughly
 ## Why this shape is the right one for production realtime vision
 
 The YOLO-on-webcam tutorial is the toy case. Real applications — AR try-on,
-robotic teleop, creative filters, agentic video — need a *stack* of
+robotic teleop, creative filters, agentic video — need a _stack_ of
 perceptual models running in lockstep on every frame, not one. The binding
 constraint on a stream is **per-frame latency budget**, not throughput or
 cost per call. Network round-trips between separate runners, or between a
@@ -26,13 +26,17 @@ demonstration of it.
 
 ```
 app.py                 # the fal.App — a minimal extension of yolo.py
+pyproject.toml         # uv project with all runtime deps
+.env.example           # template for Metered TURN credentials
 core/
   perception.py        # three model wrappers (YOLO / Depth / Seg), pure python
   compose.py           # four render modes (Detection / Depth / Seg / Composite)
 frontend/
-  index.html           # overlay for yolo_webcam_webrtc/frontend/index.html
-  src/main.js          # overlay with layer toggles, HUD, timing handler
-  src/style.css        # overlay with toggle-button + HUD styles
+  package.json         # self-contained Vite project
+  vite.config.js       # dev server config
+  index.html           # UI with local-mode toggle + layer toggles + HUD
+  src/main.js          # WebRTC signaling, layer toggles, HUD, timing handler
+  src/style.css        # toggle-button + HUD styles
 notes/
   yolo_py_excerpts.md  # everything learned by reading the upstream source
   decisions.md         # rolling record of non-obvious choices
@@ -85,12 +89,12 @@ notes/
 
 ## VRAM and cost math
 
-| Model | Weights | Activations @ 640×480 | Total |
-|---|---|---|---|
-| YOLOv8n | ~12 MB | ~150 MB | ~160 MB |
-| Depth Anything V2 Small | ~140 MB | ~300 MB | ~440 MB |
-| SegFormer-b0 | ~14 MB | ~250 MB | ~260 MB |
-| **Total** | | | **~920 MB** |
+| Model                   | Weights | Activations @ 640×480 | Total       |
+| ----------------------- | ------- | --------------------- | ----------- |
+| YOLOv8n                 | ~12 MB  | ~150 MB               | ~160 MB     |
+| Depth Anything V2 Small | ~140 MB | ~300 MB               | ~440 MB     |
+| SegFormer-b0            | ~14 MB  | ~250 MB               | ~260 MB     |
+| **Total**               |         |                       | **~920 MB** |
 
 ~920 MB on an 80 GB H100 is ~1.2 %. This is exactly why co-location is the
 right pattern — there is no resource conflict, just amortized loading and
@@ -108,7 +112,7 @@ warm for a session.
   `fal_demos/image/parallel_sdxl`. This demo is about co-locating several
   models on one GPU, which is a different pattern.
 - **Not a generative demo.** An SDXL-Turbo img2img version of this is a
-  different fork. The pitch here is the *perception stack*, not a
+  different fork. The pitch here is the _perception stack_, not a
   prompt-driven transform.
 - **Not optimized for max framerate.** TensorRT or ONNX conversions would
   shave another 30 % off the per-frame budget. That's a hardening pass,
@@ -140,11 +144,61 @@ renaming the namespace and writing two paragraphs of intro.
 
 ## Running it
 
-### Prereqs
+### Option A — Local mode (any GPU machine / Mac)
+
+No fal Serverless account required. The app runs entirely on the local
+machine via `fal run --local`.
+
+**Prerequisites**
+
+- [uv](https://docs.astral.sh/uv/) (Python package manager)
+- Node.js 18+
+- Metered TURN credentials (`METERED_TURN_SECRET_KEY`, `METERED_TURN_LABEL`)
+
+**Setup**
+
+```bash
+cp .env.example .env
+# Edit .env and fill in your Metered TURN credentials.
+
+uv sync              # installs fal + all runtime deps, generates uv.lock
+```
+
+**Backend** (Terminal 1)
+
+```bash
+uv run --env-file .env fal run --local app.py::MultiPerceptionWebRTC
+```
+
+The WebSocket server starts on `ws://localhost:8080/realtime`. Device is
+auto-detected: CUDA on NVIDIA GPUs, MPS on Apple Silicon, CPU fallback.
+YOLO weights are auto-downloaded on first run (~6 MB).
+
+**Frontend** (Terminal 2)
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open the Vite URL (default `http://localhost:5173`). The "Local mode"
+checkbox is on by default — just click **Start**.
+
+**Remote GPU notes**: if running on a remote machine, expose ports 8080
+(backend WS) and 5173 (Vite) and set the Backend URL field in the frontend
+to `ws://<public-ip>:8080` instead of `ws://localhost:8080`.
+
+**Apple Silicon notes**: runs on MPS. Expect slower inference than a
+dedicated NVIDIA GPU but fully functional for development and testing.
+
+### Option B — fal Serverless (cloud)
+
+**Prerequisites**
 
 - A fal account with Serverless access
-- A Metered TURN account — the upstream example (and this one) hard-fail in
-  `setup()` if `METERED_TURN_SECRET_KEY` or `METERED_TURN_LABEL` are not set
+- A Metered TURN account — hard-fails in `setup()` if
+  `METERED_TURN_SECRET_KEY` or `METERED_TURN_LABEL` are not set
 - `yolov8n.pt` available at `/data/yolov8n.pt` on the fal runner, or set
   `YOLO_MODEL_PATH` to a path Ultralytics can auto-download to
 
@@ -153,7 +207,7 @@ fal secrets set METERED_TURN_SECRET_KEY=<your-key>
 fal secrets set METERED_TURN_LABEL=<your-label>
 ```
 
-### Backend
+**Backend**
 
 ```bash
 fal run app.py              # ephemeral, prints an app id you can hit
@@ -161,23 +215,14 @@ fal run app.py              # ephemeral, prints an app id you can hit
 fal deploy app.py           # persistent endpoint
 ```
 
-### Frontend
-
-The `frontend/` directory in this repo is an **overlay** on
-`fal-demos/video/yolo_webcam_webrtc/frontend` — the package.json, vite
-config, token proxy, and node_modules layout come from upstream. To run
-locally:
+**Frontend**
 
 ```bash
-git clone https://github.com/fal-ai-community/fal-demos.git
-cp -R fal-demos/video/yolo_webcam_webrtc/frontend ./upstream-frontend
-cp frontend/index.html upstream-frontend/index.html
-cp frontend/src/main.js upstream-frontend/src/main.js
-cp frontend/src/style.css upstream-frontend/src/style.css
-cd upstream-frontend
-FAL_KEY=<your-fal-key> npm install
+cd frontend
+npm install
 FAL_KEY=<your-fal-key> npm run dev
 ```
 
-Open the Vite URL and paste your app id (e.g.
-`myuser/multi-perception-webrtc`) into the Endpoint field.
+Uncheck "Local mode" in the UI, paste your app id (e.g.
+`myuser/multi-perception-webrtc`) into the Endpoint field, and click
+**Start**.

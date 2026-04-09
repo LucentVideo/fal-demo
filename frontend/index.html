@@ -18,6 +18,16 @@
 
       <section class="panel">
         <div class="field">
+          <label class="toggle-label">
+            <input id="localMode" type="checkbox" checked />
+            Local mode
+          </label>
+        </div>
+        <div class="field" id="backendUrlField">
+          <label for="backendUrl">Backend URL</label>
+          <input id="backendUrl" type="text" value="ws://localhost:8080" />
+        </div>
+        <div class="field" id="appIdField" style="display:none">
           <label for="appId">Endpoint</label>
           <input id="appId" type="text" value="myuser/multi-perception-webrtc" />
         </div>

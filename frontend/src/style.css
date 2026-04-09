@@ -54,6 +54,22 @@ header p {
   color: #9aa3b7;
 }
 
+.toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #9aa3b7;
+  cursor: pointer;
+}
+
+.toggle-label input[type="checkbox"] {
+  width: auto;
+  accent-color: #f4c45b;
+}
+
 .field.inline {
   display: flex;
   gap: 12px;
