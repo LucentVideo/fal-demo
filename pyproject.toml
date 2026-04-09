@@ -1,0 +1,16 @@
+[project]
+name = "multi-perception-webrtc"
+version = "0.1.0"
+description = "Three perceptual models (YOLO + Depth Anything V2 + SegFormer) co-located on a single warm fal Serverless runner, driving a WebRTC webcam stream."
+requires-python = ">=3.10"
+
+# NOTE: the runtime requirements for the deployed app are defined inside
+# app.py on the fal.App subclass (mirroring fal_demos/image/sana.py). This
+# file only lists dev-side dependencies used for local wrapper smoke tests
+# before touching fal infrastructure.
+dependencies = [
+    "fal",
+]
+
+[tool.fal]
+# placeholder for any fal-cli config that the CLI picks up

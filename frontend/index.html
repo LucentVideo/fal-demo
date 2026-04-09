@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Multi-Perception WebRTC — YOLO + Depth + SegFormer on one warm fal runner</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>Multi-Perception WebRTC</h1>
+        <p>
+          Three perceptual models — YOLOv8n, Depth Anything V2 Small, SegFormer-b0 —
+          running on every frame on a single warm fal Serverless runner. Toggle layers live.
+        </p>
+      </header>
+
+      <section class="panel">
+        <div class="field">
+          <label for="appId">Endpoint</label>
+          <input id="appId" type="text" value="myuser/multi-perception-webrtc" />
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="buttons">
+          <button id="startBtn">Start</button>
+          <button id="stopBtn" disabled>Stop</button>
+        </div>
+        <div class="status" id="status">Disconnected</div>
+      </section>
+
+      <section class="panel">
+        <h2>Video Feeds</h2>
+
+        <div class="layer-toggles" id="layerToggles">
+          <button class="layer-btn active" data-layer="detection">Detection</button>
+          <button class="layer-btn" data-layer="depth">Depth</button>
+          <button class="layer-btn" data-layer="segmentation">Segmentation</button>
+          <button class="layer-btn" data-layer="composite">All composited</button>
+        </div>
+
+        <div class="video-grid">
+          <div class="video-card">
+            <div class="video-title">Your Webcam (raw)</div>
+            <div class="metric-row">
+              <div class="fps" id="localFps">FPS: --</div>
+              <div class="resolution" id="localRes">-- x --</div>
+            </div>
+            <div class="bitrate" id="localBitrate">Up: -- Mbps</div>
+            <video id="localVideo" autoplay playsinline muted></video>
+          </div>
+          <div class="video-card">
+            <div class="video-title">Perception stack (processed)</div>
+            <div class="metric-row">
+              <div class="fps" id="remoteFps">FPS: --</div>
+              <div class="resolution" id="remoteRes">-- x --</div>
+            </div>
+            <div class="bitrate" id="remoteBitrate">Down: -- Mbps</div>
+            <video id="remoteVideo" autoplay playsinline></video>
+          </div>
+        </div>
+
+        <div class="hud" id="hud">
+          <span class="hud-chip" id="hudRunner">runner: —</span>
+          <span class="hud-chip" id="hudModels">models: —</span>
+          <span class="hud-chip" id="hudYolo">yolo: — ms</span>
+          <span class="hud-chip" id="hudDepth">depth: — ms</span>
+          <span class="hud-chip" id="hudSeg">seg: — ms</span>
+          <span class="hud-chip strong" id="hudTotal">total: — ms</span>
+          <span class="hud-chip kill" id="hudHops">network hops eliminated: 3 → 0</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Logs</h2>
+        <div class="log" id="log"></div>
+      </section>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

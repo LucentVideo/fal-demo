@@ -1,0 +1,582 @@
+"""Multi-perception WebRTC on fal Serverless.
+
+Three perceptual models (YOLOv8n, Depth Anything V2 Small, SegFormer-b0)
+co-located on a single warm runner, driving a WebRTC webcam stream.
+
+This file is a minimal, surgical extension of the upstream
+``fal_demos/video/yolo_webcam_webrtc/yolo.py`` example:
+
+* Same ``@fal.realtime("/realtime", buffering=5)`` signaling handler shape.
+* Same Metered-TURN ICE bootstrap.
+* Same ``aiortc`` peer-connection lifecycle and shutdown hygiene.
+
+The three extensions, each small and isolated:
+
+1. ``setup()`` loads three models and runs a black-frame warmup on each so
+   the first user-visible frame is not paying cold-compile tax.
+2. ``LayerToggleInput`` is added to the discriminated union of realtime
+   inputs, and ``TimingOutput`` is added to the outputs. The existing
+   signaling WebSocket carries both, mirroring the control-extension
+   pattern already used by ``fal_demos/video/matrix_webrtc/matrix.py``.
+3. The custom ``MultiPerceptionTrack`` replaces upstream's ``YOLOTrack``.
+   It runs the models sequentially, lazily by layer, times each call,
+   and pushes throttled ``TimingOutput`` messages into the signaling
+   handler's outgoing queue for the frontend HUD.
+
+Co-location, not parallelism, is the whole point: the three models are
+CUDA-bound on the same GPU and would serialize on the same stream under
+``asyncio.gather`` regardless — see ``notes/decisions.md``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from contextlib import suppress
+from typing import Annotated, AsyncIterator, Literal
+
+import fal
+from fastapi import WebSocketDisconnect
+from pydantic import BaseModel, Field, RootModel, TypeAdapter, ValidationError
+
+
+# ---------- Pydantic signaling models ------------------------------------
+
+class IceCandidate(BaseModel):
+    candidate: str
+    sdpMid: str | None = None
+    sdpMLineIndex: int | None = None
+
+
+class OfferInput(BaseModel):
+    type: Literal["offer"]
+    sdp: str
+
+
+class IceCandidateInput(BaseModel):
+    type: Literal["icecandidate"]
+    candidate: IceCandidate | None = None
+
+
+class LayerToggleInput(BaseModel):
+    """Switch which model layer the runner composes into the outgoing frame.
+
+    Extension over upstream yolo.py. Mirrors the discriminated-union control
+    pattern in fal_demos/video/matrix_webrtc/matrix.py (ActionInput, PauseInput).
+    """
+
+    type: Literal["layer"]
+    layer: Literal["detection", "depth", "segmentation", "composite"]
+
+
+RealtimeInputMessage = Annotated[
+    OfferInput | IceCandidateInput | LayerToggleInput,
+    Field(discriminator="type"),
+]
+
+
+class RealtimeInput(RootModel):
+    root: RealtimeInputMessage
+
+
+class IceServersOutput(BaseModel):
+    type: Literal["iceservers"]
+    iceservers: list[dict]
+
+
+class AnswerOutput(BaseModel):
+    type: Literal["answer"]
+    sdp: str
+
+
+class IceCandidateOutput(BaseModel):
+    type: Literal["icecandidate"]
+    candidate: IceCandidate | None = None
+
+
+class RunnerInfoOutput(BaseModel):
+    """One-shot message sent right after ICE servers so the HUD can show
+    warm-runner identity and which models are loaded."""
+
+    type: Literal["runner_info"]
+    runner_id: str
+    models: list[str]
+
+
+class TimingOutput(BaseModel):
+    """Per-frame perception timings for the HUD. Throttled server-side to
+    roughly 3 Hz so the WebSocket is not flooded."""
+
+    type: Literal["timing"]
+    layer: str
+    yolo_ms: float | None = None
+    depth_ms: float | None = None
+    seg_ms: float | None = None
+    total_ms: float
+
+
+class ErrorOutput(BaseModel):
+    type: Literal["error"]
+    error: str
+
+
+RealtimeOutputMessage = Annotated[
+    IceServersOutput
+    | AnswerOutput
+    | IceCandidateOutput
+    | RunnerInfoOutput
+    | TimingOutput
+    | ErrorOutput,
+    Field(discriminator="type"),
+]
+
+
+class RealtimeOutput(RootModel):
+    root: RealtimeOutputMessage
+
+
+# ---------- The fal.App --------------------------------------------------
+
+class MultiPerceptionWebRTC(
+    fal.App,
+    keep_alive=300,
+    min_concurrency=0,
+    max_concurrency=4,
+    name="multi-perception-webrtc",
+):
+    # Mirrors upstream yolo_webcam_webrtc/yolo.py machine choice. Downgrading
+    # to GPU-A100 is defensible (see README + notes/decisions.md) but we
+    # match upstream here for zero-deviation on the canonical axis.
+    machine_type = "GPU-H100"
+    TURN_EXPIRY_SECONDS = 600
+
+    local_python_modules = ["core"]
+
+    requirements = [
+        # Transport + WebRTC stack — match upstream yolo.py exactly.
+        "aiortc",
+        "av",
+        "opencv-python",
+        "pydantic",
+        "ultralytics",
+        # Perception stack for Depth Anything V2 + SegFormer.
+        "torch==2.6.0",
+        "torchvision==0.21.0",
+        "transformers==4.51.3",
+        "pillow",
+        "numpy<2",  # ultralytics + torch 2.6 still prefer numpy 1.x
+        "--extra-index-url",
+        "https://download.pytorch.org/whl/cu124",
+    ]
+
+    # ------------------------------------------------------------------
+    # setup() — runs once per runner, loads all three models, warms each.
+    # ------------------------------------------------------------------
+
+    def setup(self):
+        import os
+        import uuid
+
+        import numpy as np
+
+        from core.perception import (
+            DepthEstimator,
+            SemanticSegmenter,
+            YoloDetector,
+        )
+
+        # Metered TURN env vars — required, hard-fail early, same as upstream.
+        self._metered_secret_key = os.getenv("METERED_TURN_SECRET_KEY")
+        self._metered_label = os.getenv("METERED_TURN_LABEL")
+        required = {
+            "METERED_TURN_SECRET_KEY": self._metered_secret_key,
+            "METERED_TURN_LABEL": self._metered_label,
+        }
+        missing = [k for k, v in required.items() if not v]
+        if missing:
+            raise RuntimeError(
+                f"Missing required Metered TURN env vars: {', '.join(missing)}. "
+                "Set them via `fal secrets set` before starting the realtime app."
+            )
+
+        yolo_weights = os.getenv("YOLO_MODEL_PATH", "/data/yolov8n.pt")
+
+        # Load all three perceptual models onto the same GPU.
+        self.yolo = YoloDetector(weights_path=yolo_weights, device="cuda")
+        self.depth = DepthEstimator(device="cuda")
+        self.seg = SemanticSegmenter(device="cuda")
+
+        # Warmup: run a black frame through each so CUDA kernels JIT-compile
+        # before the first user frame. Mirrors the warmup idiom in sana.py's
+        # setup() and keeps cold-compile tax off the user-visible latency.
+        dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+        _ = self.yolo(dummy)
+        _ = self.depth(dummy)
+        _ = self.seg(dummy)
+
+        self._runner_id = os.environ.get("FAL_RUNNER_ID") or str(uuid.uuid4())[:8]
+        self._loaded_models = ["yolov8n", "depth-anything-v2-small", "segformer-b0"]
+
+    # ------------------------------------------------------------------
+    # Metered TURN bootstrap — copied verbatim from upstream yolo.py.
+    # ------------------------------------------------------------------
+
+    def _build_ice_servers(self) -> list[dict]:
+        import json
+        import urllib.parse
+        import urllib.request
+
+        label = self._metered_label
+        secret_key = self._metered_secret_key
+        assert label is not None
+        assert secret_key is not None
+        credentials_url = f"https://{label}.metered.live/api/v1/turn/credentials"
+        credential_url = f"https://{label}.metered.live/api/v1/turn/credential"
+
+        def fetch_ice_servers(api_key: str) -> list[dict]:
+            query = urllib.parse.urlencode({"apiKey": api_key})
+            join_char = "&" if "?" in credentials_url else "?"
+            url = f"{credentials_url}{join_char}{query}"
+            with urllib.request.urlopen(url, timeout=5) as response:
+                payload = response.read().decode("utf-8")
+            raw_servers = json.loads(payload)
+            servers: list[dict] = []
+            for item in raw_servers:
+                urls = item.get("urls")
+                if not urls:
+                    continue
+                servers.append(
+                    {
+                        "urls": urls,
+                        "username": item.get("username"),
+                        "credential": item.get("credential", item.get("password")),
+                    }
+                )
+            return servers
+
+        query = urllib.parse.urlencode({"secretKey": secret_key})
+        join_char = "&" if "?" in credential_url else "?"
+        url = f"{credential_url}{join_char}{query}"
+        body = json.dumps(
+            {
+                "expiryInSeconds": self.TURN_EXPIRY_SECONDS,
+                "label": "fal-multi-perception-webrtc-demo",
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            url=url,
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = response.read().decode("utf-8")
+        credential_payload = json.loads(payload)
+        temporary_api_key = credential_payload.get("apiKey")
+        if not temporary_api_key:
+            raise RuntimeError("Metered credential response missing apiKey.")
+
+        servers = fetch_ice_servers(temporary_api_key)
+        if not servers:
+            raise RuntimeError("Metered returned empty ICE server list.")
+        print("WebRTC: using Metered secret-minted ICE servers")
+        return servers
+
+    # ------------------------------------------------------------------
+    # The realtime signaling endpoint. Frames do NOT flow through here —
+    # this handles SDP offer/answer, ICE candidates, and the added layer
+    # toggles. Frames are relayed via aiortc peer-to-peer, processed inside
+    # MultiPerceptionTrack.recv() below.
+    # ------------------------------------------------------------------
+
+    @fal.realtime("/realtime", buffering=5)
+    async def webrtc(
+        self, inputs: AsyncIterator[RealtimeInput]
+    ) -> AsyncIterator[RealtimeOutput]:
+        from aiortc import (
+            RTCConfiguration,
+            RTCIceServer,
+            RTCPeerConnection,
+            RTCSessionDescription,
+        )
+        from aiortc.contrib.media import MediaBlackhole
+        from aiortc.sdp import candidate_from_sdp
+
+        signal_ice_servers = self._build_ice_servers()
+        rtc_ice_servers = [
+            RTCIceServer(
+                urls=server["urls"],
+                username=server.get("username"),
+                credential=server.get("credential"),
+            )
+            for server in signal_ice_servers
+        ]
+        pc = RTCPeerConnection(
+            configuration=RTCConfiguration(iceServers=rtc_ice_servers)
+        )
+        blackhole = MediaBlackhole()
+        stop_event = asyncio.Event()
+        outgoing: asyncio.Queue[RealtimeOutput | None] = asyncio.Queue()
+        input_adapter = TypeAdapter(RealtimeInputMessage)
+
+        # Mutable per-connection track handle — the on_track callback writes
+        # it, the layer-toggle handler reads it. One peer connection = one
+        # track, so a single-slot dict is sufficient.
+        track_ref: dict[str, "MultiPerceptionTrack | None"] = {"track": None}
+
+        async def send(payload: RealtimeOutputMessage) -> None:
+            if stop_event.is_set():
+                return
+            await outgoing.put(RealtimeOutput(root=payload))
+
+        async def send_error(prefix: str, exc: Exception) -> None:
+            await send(
+                ErrorOutput(type="error", error=f"{prefix}:{type(exc).__name__}:{exc}")
+            )
+            stop_event.set()
+            await outgoing.put(None)
+
+        @pc.on("icecandidate")
+        async def on_icecandidate(candidate):
+            if candidate is None:
+                await send(IceCandidateOutput(type="icecandidate", candidate=None))
+                return
+            await send(
+                IceCandidateOutput(
+                    type="icecandidate",
+                    candidate=IceCandidate(
+                        candidate=candidate.candidate,
+                        sdpMid=candidate.sdpMid,
+                        sdpMLineIndex=candidate.sdpMLineIndex,
+                    ),
+                )
+            )
+
+        @pc.on("connectionstatechange")
+        async def on_connectionstatechange() -> None:
+            if pc.connectionState in ("failed", "closed", "disconnected"):
+                stop_event.set()
+                await outgoing.put(None)
+
+        @pc.on("track")
+        def on_track(track):
+            if track.kind == "video":
+                mp_track = create_multi_perception_track(
+                    source_track=track,
+                    yolo=self.yolo,
+                    depth=self.depth,
+                    seg=self.seg,
+                    outgoing=outgoing,
+                )
+                track_ref["track"] = mp_track
+                pc.addTrack(mp_track)
+            else:
+                asyncio.ensure_future(blackhole.consume(track))
+
+        async def handle_offer(payload: OfferInput) -> bool:
+            try:
+                offer = RTCSessionDescription(sdp=payload.sdp, type=payload.type)
+                await pc.setRemoteDescription(offer)
+                answer = await pc.createAnswer()
+                await pc.setLocalDescription(answer)
+                await send(AnswerOutput(type="answer", sdp=pc.localDescription.sdp))
+                return True
+            except Exception as exc:
+                await send_error("offer_failed", exc)
+                return False
+
+        async def handle_icecandidate(payload: IceCandidateInput) -> bool:
+            try:
+                candidate = payload.candidate
+                if candidate is None:
+                    await pc.addIceCandidate(None)
+                    return True
+                parsed = candidate_from_sdp(candidate.candidate)
+                parsed.sdpMid = candidate.sdpMid
+                parsed.sdpMLineIndex = candidate.sdpMLineIndex
+                await pc.addIceCandidate(parsed)
+                return True
+            except Exception as exc:
+                await send_error("ice_failed", exc)
+                return False
+
+        async def handle_layer(payload: LayerToggleInput) -> bool:
+            track = track_ref["track"]
+            if track is not None:
+                track.active_layer = payload.layer
+            return True
+
+        async def handle_payload(payload: RealtimeInputMessage) -> bool:
+            if isinstance(payload, OfferInput):
+                return await handle_offer(payload)
+            if isinstance(payload, IceCandidateInput):
+                return await handle_icecandidate(payload)
+            if isinstance(payload, LayerToggleInput):
+                return await handle_layer(payload)
+            return True
+
+        async def input_loop() -> None:
+            try:
+                async for payload in inputs:
+                    if stop_event.is_set():
+                        break
+                    try:
+                        parsed_payload = (
+                            payload.root
+                            if isinstance(payload, RealtimeInput)
+                            else input_adapter.validate_python(payload)
+                        )
+                    except ValidationError as exc:
+                        await send_error("invalid_payload", exc)
+                        break
+                    should_continue = await handle_payload(parsed_payload)
+                    if not should_continue:
+                        break
+            finally:
+                stop_event.set()
+                await outgoing.put(None)
+
+        input_task: asyncio.Task | None = None
+        try:
+            await outgoing.put(
+                RealtimeOutput(
+                    root=IceServersOutput(
+                        type="iceservers", iceservers=signal_ice_servers
+                    )
+                )
+            )
+            await outgoing.put(
+                RealtimeOutput(
+                    root=RunnerInfoOutput(
+                        type="runner_info",
+                        runner_id=self._runner_id,
+                        models=self._loaded_models,
+                    )
+                )
+            )
+            input_task = asyncio.create_task(input_loop())
+            while True:
+                payload = await outgoing.get()
+                if payload is None:
+                    raise WebSocketDisconnect()
+                yield payload
+        finally:
+            stop_event.set()
+            if input_task is not None:
+                input_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await input_task
+            await blackhole.stop()
+            await pc.close()
+
+
+# ---------- Custom media track -------------------------------------------
+
+def create_multi_perception_track(*, source_track, yolo, depth, seg, outgoing):
+    """Factory for a MediaStreamTrack that runs three models sequentially
+    per frame and pushes throttled timing messages into the signaling queue.
+
+    The three models are CUDA-bound on the same GPU and would serialize on
+    the same stream under asyncio.gather regardless; sequential is honest,
+    and the total budget is fine. See notes/decisions.md.
+    """
+    from aiortc.mediastreams import MediaStreamTrack
+    from av import VideoFrame
+
+    from core.compose import compose_frame
+
+    class MultiPerceptionTrack(MediaStreamTrack):
+        kind = "video"
+
+        def __init__(self):
+            super().__init__()
+            self.source_track = source_track
+            self.yolo = yolo
+            self.depth = depth
+            self.seg = seg
+            self.outgoing = outgoing
+            # Mutated by the signaling handler's LayerToggleInput dispatch.
+            self.active_layer: str = "detection"
+            self._frame_count = 0
+            # Throttle timing emits to ~3 Hz assuming ~15 FPS.
+            self._timing_every_n_frames = 5
+
+        async def recv(self):
+            import time as _time
+
+            frame = await self.source_track.recv()
+            img = frame.to_ndarray(format="bgr24")
+
+            layer = self.active_layer
+            yolo_out = None
+            depth_out = None
+            seg_out = None
+            yolo_ms: float | None = None
+            depth_ms: float | None = None
+            seg_ms: float | None = None
+
+            try:
+                t_start = _time.perf_counter()
+
+                # Lazy per-layer: only run the models the current layer
+                # actually needs. Composite runs all three and is the
+                # showpiece timing readout for the HUD.
+                if layer in ("detection", "composite"):
+                    s = _time.perf_counter()
+                    yolo_out = self.yolo(img)
+                    yolo_ms = (_time.perf_counter() - s) * 1000.0
+
+                if layer in ("depth", "composite"):
+                    s = _time.perf_counter()
+                    depth_out = self.depth(img)
+                    depth_ms = (_time.perf_counter() - s) * 1000.0
+
+                if layer in ("segmentation", "composite"):
+                    s = _time.perf_counter()
+                    seg_out = self.seg(img)
+                    seg_ms = (_time.perf_counter() - s) * 1000.0
+
+                total_ms = (_time.perf_counter() - t_start) * 1000.0
+
+                annotated = compose_frame(
+                    img,
+                    layer=layer,
+                    yolo=yolo_out,
+                    depth=depth_out,
+                    seg=seg_out,
+                )
+            except Exception as exc:
+                print(f"perception inference error: {exc}")
+                annotated = img
+                total_ms = 0.0
+
+            self._frame_count += 1
+            if self._frame_count % self._timing_every_n_frames == 0:
+                with suppress(Exception):
+                    self.outgoing.put_nowait(
+                        RealtimeOutput(
+                            root=TimingOutput(
+                                type="timing",
+                                layer=layer,
+                                yolo_ms=yolo_ms,
+                                depth_ms=depth_ms,
+                                seg_ms=seg_ms,
+                                total_ms=total_ms,
+                            )
+                        )
+                    )
+
+            new_frame = VideoFrame.from_ndarray(annotated, format="bgr24")
+            new_frame.pts = frame.pts
+            new_frame.time_base = frame.time_base
+            return new_frame
+
+    return MultiPerceptionTrack()
+
+
+# ---------- Local launcher (mirrors upstream yolo.py pattern) -----------
+
+if __name__ == "__main__":
+    info = MultiPerceptionWebRTC.spawn()
+    print(f"App ID: {info.application}")
+    print(f"Realtime endpoint: {info.application}/realtime")
+    info.wait()
