@@ -12,7 +12,7 @@
         <h1>Face Swap Arena</h1>
         <p>
           Real-time face swap on a single warm fal runner.
-          Upload a face, everyone becomes that person.
+          Faces are auto-detected from webcams; upload one to override.
         </p>
       </header>
 
@@ -54,12 +54,12 @@
       </section>
 
       <section class="panel face-swap-panel" id="faceSwapPanel">
-        <h2>Face Swap</h2>
+        <h2>Face Override (optional)</h2>
         <div class="face-upload-row">
           <div class="face-upload-zone" id="faceUploadZone">
             <input type="file" id="faceFileInput" accept="image/*" hidden />
             <img id="facePreview" class="face-preview" style="display:none" />
-            <div id="faceUploadPrompt" class="face-upload-prompt">Click or drop an image to set the source face</div>
+            <div id="faceUploadPrompt" class="face-upload-prompt">Upload a face to override auto-detection</div>
           </div>
           <div class="face-controls">
             <button id="clearFaceBtn" disabled>Clear Face</button>

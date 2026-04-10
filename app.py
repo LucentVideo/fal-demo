@@ -159,6 +159,7 @@ class PeerInfo(BaseModel):
     peer_id: str
     username: str
     has_video: bool
+    face_captured: bool = False
 
 
 class JoinedOutput(BaseModel):
@@ -183,6 +184,15 @@ class SourceFaceSetOutput(BaseModel):
     message: str = ""
 
 
+class FaceCapturedOutput(BaseModel):
+    """Broadcast when a peer's face is auto-detected from their webcam."""
+
+    type: Literal["face_captured"]
+    peer_id: str
+    username: str
+    success: bool
+
+
 RealtimeOutputMessage = Annotated[
     IceServersOutput
     | AnswerOutput
@@ -192,7 +202,8 @@ RealtimeOutputMessage = Annotated[
     | ErrorOutput
     | JoinedOutput
     | RoomStateOutput
-    | SourceFaceSetOutput,
+    | SourceFaceSetOutput
+    | FaceCapturedOutput,
     Field(discriminator="type"),
 ]
 
@@ -589,6 +600,8 @@ class MultiPerceptionWebRTC(
                 return RealtimeOutput(root=TimingOutput(**msg))
             if msg_type == "source_face_set":
                 return RealtimeOutput(root=SourceFaceSetOutput(**msg))
+            if msg_type == "face_captured":
+                return RealtimeOutput(root=FaceCapturedOutput(**msg))
             return None
 
         input_task: asyncio.Task | None = None

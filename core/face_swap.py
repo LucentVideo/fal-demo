@@ -68,6 +68,10 @@ class FaceSwapper:
         log.info("set_source: source face set")
         return True
 
+    def detect_faces(self, img_bgr: np.ndarray) -> list:
+        """Run face detection + embedding extraction without requiring a source face."""
+        return self.face_app.get(img_bgr)
+
     def clear_source(self) -> None:
         self.source_face = None
         log.info("source face cleared")

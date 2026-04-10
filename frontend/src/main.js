@@ -368,7 +368,10 @@ const updateRoomUI = (state) => {
       const classes = ["participant", isMe ? "me" : ""].filter(Boolean).join(" ");
       const label = isMe ? `${p.username} (you)` : p.username;
       const videoDot = p.has_video ? '<span class="video-dot"></span>' : "";
-      return `<div class="${classes}">${videoDot}<span class="participant-name">${label}</span></div>`;
+      const faceIcon = p.face_captured
+        ? '<span class="face-captured-icon" title="Face captured">&#9786;</span>'
+        : '<span class="face-pending-icon" title="Detecting face…">&#9676;</span>';
+      return `<div class="${classes}">${videoDot}${faceIcon}<span class="participant-name">${label}</span></div>`;
     })
     .join("");
 };
@@ -522,6 +525,15 @@ const connectWs = (wsUrl) => {
         faceStatusEl.className = "face-status error";
       }
       log(`Face swap: ${msg.message}`);
+    } else if (msg.type === "face_captured") {
+      if (roomState) {
+        const peer = roomState.peers.find((p) => p.peer_id === msg.peer_id);
+        if (peer) {
+          peer.face_captured = msg.success;
+          updateRoomUI(roomState);
+        }
+      }
+      log(`Face captured: ${msg.username} (${msg.peer_id})`);
     } else if (msg.type === "timing") {
       applyTimingMessage(msg);
     } else if (msg.type === "answer" && msg.sdp && pc) {

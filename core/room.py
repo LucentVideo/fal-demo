@@ -77,6 +77,8 @@ class PeerState:
     video_track: Any = None
     frame_relay: LatestFrameRelay | None = None
     outgoing_queue: asyncio.Queue | None = None
+    reference_face: Any = None
+    face_captured: bool = False
 
 
 class FrameBroadcaster:
@@ -194,8 +196,10 @@ class Room:
 
     def remove_peer(self, peer_id: str) -> None:
         peer = self.peers.pop(peer_id, None)
-        if peer is not None and peer.frame_relay is not None:
-            peer.frame_relay.stop()
+        if peer is not None:
+            if peer.frame_relay is not None:
+                peer.frame_relay.stop()
+            peer.reference_face = None
         with suppress(ValueError):
             self._peer_order.remove(peer_id)
         log.info(f"remove_peer {peer_id}, remaining={list(self.peers.keys())}")
@@ -226,6 +230,7 @@ class Room:
                     "peer_id": p.peer_id,
                     "username": p.username,
                     "has_video": p.video_track is not None,
+                    "face_captured": p.face_captured,
                 }
                 for p in (
                     self.peers[pid]
@@ -243,6 +248,38 @@ class Room:
 
     async def broadcast_room_state(self) -> None:
         self._enqueue_to_all(self.get_state_dict())
+
+    # ---- face capture ----------------------------------------------------
+
+    def _try_capture_face(self, peer: PeerState, img_bgr) -> bool:
+        """Attempt to detect and store a reference face for this peer.
+
+        Returns True if a face was successfully captured.
+        """
+        if self.face_swapper is None:
+            return False
+        faces = self.face_swapper.detect_faces(img_bgr)
+        if not faces:
+            return False
+        best = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+        peer.reference_face = best
+        peer.face_captured = True
+        log.info(f"face captured for {peer.peer_id} ({peer.username})")
+        self._enqueue_to_all({
+            "type": "face_captured",
+            "peer_id": peer.peer_id,
+            "username": peer.username,
+            "success": True,
+        })
+        return True
+
+    def get_face_map(self) -> dict[str, Any]:
+        """Return {peer_id: reference_face} for all peers with captured faces."""
+        return {
+            pid: peer.reference_face
+            for pid, peer in self.peers.items()
+            if peer.face_captured and peer.reference_face is not None
+        }
 
     # ---- processing loop ------------------------------------------------
 
@@ -334,6 +371,12 @@ class Room:
                     continue
 
                 img = raw_frames[i].to_ndarray(format="bgr24")
+
+                if not peer.face_captured and self.face_swapper is not None:
+                    try:
+                        self._try_capture_face(peer, img)
+                    except Exception:
+                        pass
 
                 try:
                     s = _time.perf_counter()
