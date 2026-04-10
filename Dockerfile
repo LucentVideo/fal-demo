@@ -39,6 +39,10 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
 RUN pip install --no-cache-dir onnxruntime-gpu \
         --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
 
+# fal calls _print_python_packages() at startup; some base-image dists have metadata=None → TypeError.
+COPY scripts/patch-fal-app-metadata.py /tmp/patch-fal-app-metadata.py
+RUN python /tmp/patch-fal-app-metadata.py && rm -f /tmp/patch-fal-app-metadata.py
+
 # ── Copy project ──────────────────────────────────────────────────────
 COPY . .
 
