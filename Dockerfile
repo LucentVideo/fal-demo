@@ -16,8 +16,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ── Python deps (skip torch/torchvision — base image has them) ────────
 WORKDIR /workspace/app
 
-# Install Python deps first for layer caching
-RUN pip install --no-cache-dir \
+# Install Python deps first for layer caching.
+# Base image may ship distro cryptography without a pip RECORD; overlay a wheel first.
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir --ignore-installed cryptography \
+    && pip install --no-cache-dir \
         fal \
         aiortc \
         av \
