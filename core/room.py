@@ -436,11 +436,17 @@ class Room:
 
             loop = asyncio.get_running_loop()
 
-            for i, (pid, peer) in enumerate(peers_with_tracks):
-                if raw_frames[i] is None:
-                    continue
+            # ----------------------------------------------------------
+            # Build per-peer processing coroutines so we can fan them out
+            # concurrently with asyncio.gather (Tier 1.5).  GPU inference
+            # is still serialised by the GIL / CUDA stream, but CPU-side
+            # work (ndarray conversion, resize, text overlay) overlaps.
+            # ----------------------------------------------------------
+            async def _process_peer(idx, pid, peer):
+                if raw_frames[idx] is None:
+                    return idx, pid, peer, None, 0.0
 
-                img = raw_frames[i].to_ndarray(format="bgr24")
+                img = raw_frames[idx].to_ndarray(format="bgr24")
 
                 if not peer.face_captured and self.face_swapper is not None:
                     try:
@@ -456,7 +462,11 @@ class Room:
                     if use_face_swap:
                         annotated = await loop.run_in_executor(
                             self._executor,
-                            self.face_swapper, img,
+                            functools.partial(
+                                self.face_swapper.swap_with_source,
+                                img, self.face_swapper.source_face,
+                                copy=False,
+                            ),
                         )
                     elif pid in self._shuffle_mapping:
                         annotated = await loop.run_in_executor(
@@ -464,6 +474,7 @@ class Room:
                             functools.partial(
                                 self.face_swapper.swap_with_source,
                                 img, self._shuffle_mapping[pid],
+                                copy=False,
                             ),
                         )
                     else:
@@ -473,9 +484,23 @@ class Room:
                         annotated = compose_frame(
                             img, layer="detection", yolo=yolo_out,
                         )
-                    model_ms_total += (_time.perf_counter() - s) * 1000.0
+                    elapsed = (_time.perf_counter() - s) * 1000.0
                 except Exception:
                     annotated = img
+                    elapsed = 0.0
+
+                return idx, pid, peer, annotated, elapsed
+
+            tasks = [
+                _process_peer(i, pid, peer)
+                for i, (pid, peer) in enumerate(peers_with_tracks)
+            ]
+            results = await asyncio.gather(*tasks)
+
+            for idx, pid, peer, annotated, elapsed in results:
+                if annotated is None:
+                    continue
+                model_ms_total += elapsed
 
                 cell = cv2.resize(annotated, (cell_w, cell_h))
                 cv2.putText(
@@ -489,7 +514,7 @@ class Room:
                     cv2.LINE_AA,
                 )
 
-                r, c = divmod(i, cols)
+                r, c = divmod(idx, cols)
                 y0, x0 = r * cell_h, c * cell_w
                 canvas[y0 : y0 + cell_h, x0 : x0 + cell_w] = cell
                 cells_drawn += 1
