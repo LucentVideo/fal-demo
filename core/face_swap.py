@@ -5,7 +5,8 @@ The ``FaceSwapper`` detects all faces in a frame, swaps each with a
 pre-registered source face identity, and optionally enhances the result
 with GFPGAN face restoration.
 
-Performance notes (Tier 1 optimisations):
+Performance notes:
+  Tier 1:
   - ``face_app`` (full buffalo_l) is used only for source-face capture and
     ``detect_faces`` where embeddings/landmarks are needed.
   - ``face_app_swap`` (detection-only, 320x320) is used inside
@@ -13,6 +14,10 @@ Performance notes (Tier 1 optimisations):
     target face and the pre-computed source embedding.
   - The inswapper ONNX session is recreated with ORT_ENABLE_ALL graph
     optimisations and tuned cuDNN workspace settings.
+  Tier 2:
+  - TensorRT EP (FP16) replaces CUDA EP for inswapper inference when
+    available, with engine caching to avoid repeated JIT compilation.
+    Falls back to CUDA EP transparently if TRT is not installed.
 """
 
 from __future__ import annotations
@@ -68,14 +73,19 @@ def _download_gfpgan() -> str:
     return model_path
 
 
-def _rebuild_session_optimised(model) -> None:
-    """Recreate the ONNX Runtime session on *model* with tuned CUDA settings.
+_TRT_CACHE_DIR = "/opt/models/trt_cache"
 
-    Applies ORT graph-level optimisations and aggressive cuDNN workspace
-    settings.  Does NOT enable CUDA graphs (that requires IOBinding which
-    insightface's internal ``session.run()`` calls don't use).
+
+def _rebuild_session_optimised(model) -> None:
+    """Recreate the ONNX Runtime session with TensorRT EP (preferred) falling
+    back to CUDA EP.
+
+    TensorRT EP JIT-compiles the ONNX graph into a TRT engine on first run
+    (2-5 min) and caches it to ``_TRT_CACHE_DIR``.  Subsequent loads are fast.
+    If TRT EP is unavailable the session still gets the tuned CUDA EP path.
     """
     try:
+        import os
         import onnxruntime as ort
 
         model_path = getattr(model, "model_file", None)
@@ -86,21 +96,39 @@ def _rebuild_session_optimised(model) -> None:
         sess_opts = ort.SessionOptions()
         sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
-        providers = [
-            (
-                "CUDAExecutionProvider",
+        available = ort.get_available_providers()
+        use_trt = "TensorrtExecutionProvider" in available
+
+        if use_trt:
+            os.makedirs(_TRT_CACHE_DIR, exist_ok=True)
+            log.info("TensorrtExecutionProvider available — using TRT EP with FP16")
+
+        cuda_opts = {
+            "cudnn_conv_algo_search": "EXHAUSTIVE",
+            "cudnn_conv_use_max_workspace": "1",
+            "arena_extend_strategy": "kSameAsRequested",
+        }
+
+        providers: list = []
+        if use_trt:
+            providers.append((
+                "TensorrtExecutionProvider",
                 {
-                    "cudnn_conv_algo_search": "EXHAUSTIVE",
-                    "cudnn_conv_use_max_workspace": "1",
-                    "arena_extend_strategy": "kSameAsRequested",
+                    "trt_max_workspace_size": str(4 * 1024 ** 3),  # 4 GB
+                    "trt_fp16_enable": "True",
+                    "trt_engine_cache_enable": "True",
+                    "trt_engine_cache_path": _TRT_CACHE_DIR,
                 },
-            ),
-            "CPUExecutionProvider",
-        ]
+            ))
+        providers.append(("CUDAExecutionProvider", cuda_opts))
+        providers.append("CPUExecutionProvider")
+
         model.session = ort.InferenceSession(
             model_path, sess_options=sess_opts, providers=providers,
         )
-        log.info("rebuilt inswapper session with ORT_ENABLE_ALL optimisations")
+
+        active = model.session.get_providers()
+        log.info(f"rebuilt inswapper session — active providers: {active}")
     except Exception as exc:
         log.warning(f"failed to rebuild inswapper session: {exc}")
 
@@ -222,8 +250,30 @@ class FaceSwapper:
             return frame_bgr
 
     def warmup(self) -> None:
-        """Run a dummy frame through both analysers to warm up ONNX sessions."""
+        """Run a dummy frame through analysers and inswapper to warm up sessions.
+
+        When TensorRT EP is active the first inswapper call triggers JIT engine
+        compilation (~2-5 min).  Doing it here keeps the latency out of the
+        first real swap request.
+        """
         dummy = np.zeros((480, 640, 3), dtype=np.uint8)
         _ = self.face_app.get(dummy)
         _ = self.face_app_swap.get(dummy)
+
+        # Warm up the inswapper session (triggers TRT engine build if TRT EP).
+        try:
+            sess = self.swapper.session
+            meta = sess.get_modelmeta()
+            input_names = [i.name for i in sess.get_inputs()]
+            input_shapes = [i.shape for i in sess.get_inputs()]
+            log.info(f"inswapper warmup: inputs={list(zip(input_names, input_shapes))}")
+            dummy_inputs = {
+                name: np.zeros(shape, dtype=np.float32)
+                for name, shape in zip(input_names, input_shapes)
+            }
+            _ = sess.run(None, dummy_inputs)
+            log.info("inswapper warmup complete (TRT engine cached if applicable)")
+        except Exception as exc:
+            log.warning(f"inswapper warmup failed (non-fatal): {exc}")
+
         log.info("warmup complete")
