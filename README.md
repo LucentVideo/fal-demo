@@ -1,167 +1,122 @@
-# Multi-Perception WebRTC on fal Serverless
+# Face Swap Arena — Multiplayer WebRTC on fal Serverless
 
-A custom `fal.App` that extends the
-[`yolo_webcam_webrtc`](https://github.com/fal-ai-community/fal-demos/tree/main/fal_demos/video/yolo_webcam_webrtc)
-example to run **three perceptual models — YOLOv8n, Depth Anything V2 Small,
-and SegFormer-b0 — in parallel on every frame from a single warm runner**.
-The browser opens a webcam stream over WebRTC and shows the same stream
-processed by any combination of the three models, switchable live from a
-toggle row above the processed panel. End-to-end latency is roughly
-60–100 ms in single-model mode and 100–140 ms in composite mode on an H100.
+A multiplayer `fal.App` that streams live webcam video from multiple peers through
+a server-side AI pipeline — face detection, face swapping, and optional enhancement —
+and broadcasts the processed composite grid back to every participant in real time.
+
+## What it does
+
+- Multiple users join a shared room over WebRTC
+- Each peer's video is captured server-side and faces are extracted per-frame
+- A reference face can be uploaded by any user; the server swaps all detected faces to match it
+- **Shuffle mode**: randomly reassigns captured peer faces among participants (no one gets their own — uses Sattolo's algorithm)
+- **Enhancement toggle**: applies GFPGAN face enhancement to swapped faces
+- **YOLO overlay**: optional YOLOv8n object detection drawn on top of the stream
+- A live performance HUD shows per-model latency, runner ID, current mode, and active models
 
 ## Why this shape is the right one for production realtime vision
 
-The YOLO-on-webcam tutorial is the toy case. Real applications — AR try-on,
-robotic teleop, creative filters, agentic video — need a _stack_ of
-perceptual models running in lockstep on every frame, not one. The binding
-constraint on a stream is **per-frame latency budget**, not throughput or
-cost per call. Network round-trips between separate runners, or between a
-runner and marketplace endpoints, blow that budget: a 30–60 ms RTT per hop
-turns three models into a 300 ms frame. The only way to fit N models inside
-~80 ms is to co-locate them in `setup()` on one runner. fal Serverless is
-the only place that pattern is clean, and this file is the minimal
-demonstration of it.
+Real-time multi-user face processing has a hard **per-frame latency budget**. Any
+network round-trip between separate model runners — even on the same datacenter —
+adds 30–60 ms per hop. Face detection → face swap → enhancement as three separate
+marketplace calls would blow the ~80 ms budget before the first frame arrives.
+
+Co-locating every model in `setup()` on one warm runner eliminates those hops.
+All inference runs sequentially on the same GPU with zero network overhead.
+fal Serverless is the only platform where that pattern is clean and deployable
+in a single file.
 
 ## What's here
 
 ```
-app.py                 # the fal.App — a minimal extension of yolo.py
+app.py                 # fal.App — WebSocket signaling, room lifecycle, message types
 pyproject.toml         # uv project with all runtime deps
 .env.example           # template for Metered TURN credentials
 core/
-  perception.py        # three model wrappers (YOLO / Depth / Seg), pure python
-  compose.py           # four render modes (Detection / Depth / Seg / Composite)
+  perception.py        # YOLOv8n wrapper
+  face_swap.py         # InsightFace + inswapper + GFPGAN pipeline
+  room.py              # Room, PeerState, FrameBroadcaster, processing loop
 frontend/
   package.json         # self-contained Vite project
   vite.config.js       # dev server config
-  index.html           # UI with local-mode toggle + layer toggles + HUD
-  src/main.js          # WebRTC signaling, layer toggles, HUD, timing handler
-  src/style.css        # toggle-button + HUD styles
-notes/
-  yolo_py_excerpts.md  # everything learned by reading the upstream source
-  decisions.md         # rolling record of non-obvious choices
+  index.html           # join overlay, video grid, controls, HUD, debug panel
+  src/main.js          # WebRTC signaling, face upload, room state, shuffle UI
+  src/style.css        # grid layout, toggle buttons, HUD chips, shuffle flash
 ```
 
-## Design decisions, with line references to the canonical fal-demos patterns we mirrored
+## Design decisions
 
-- **`setup()` loads all three models and warms each with a black frame.**
-  Mirrors the load-then-warm idiom in `fal_demos/image/sana.py::setup()`.
-  Ensures CUDA kernels are JIT-compiled before the first real request,
-  keeping cold-compile tax off the user-visible latency budget.
-  → `app.py:193-208`
+- **All models co-located in `setup()`** — each is warmed with a black frame before
+  the first real peer connects, keeping CUDA JIT cost off the user-visible budget.
 
-- **The three models are called sequentially, not via `asyncio.gather`.**
-  All three are CUDA-bound on the same GPU and would serialize on the same
-  stream under gather regardless; sequential is honest, and the total
-  budget is fine. → `app.py::MultiPerceptionTrack.recv` and
-  `notes/decisions.md §1`.
+- **Sequential inference, not `asyncio.gather`** — all models are CUDA-bound on the
+  same GPU and would serialize on the same stream under gather anyway. Sequential
+  is honest. Total budget is well within the H100 frame budget.
 
-- **Layer toggles extend the existing signaling WebSocket's discriminated
-  union**, mirroring the extension pattern in
-  `fal_demos/video/matrix_webrtc/matrix.py` (`ActionInput`, `PauseInput`).
-  No separate `RTCDataChannel` needed. → `app.py::LayerToggleInput` and
-  `app.py::handle_layer`.
+- **Face capture is async** — face extraction from peer frames runs off the
+  hot path so it doesn't block the broadcast loop.
 
-- **`local_python_modules = ["core"]`** packages the local `core/`
-  perception and compose modules onto the runner. Same pattern as
-  `fal_demos/image/sana.py::local_python_modules = ["fal_demos"]`.
+- **`LatestFrameRelay` drains track queues** — only the most recent frame from
+  each peer is kept. This prevents frame accumulation lag when multiple peers
+  are connected and processing falls momentarily behind ingestion.
 
-- **`machine_type = "GPU-H100"`** matches upstream
-  `yolo_webcam_webrtc/yolo.py` exactly, zero-deviation on the canonical
-  axis. A downgrade to `GPU-A100` is defensible (2.3 % of A100 VRAM, 80 ms
-  budget fits) if the messaging needs to lean on cost; see
-  `notes/decisions.md §3`.
+- **Sattolo's algorithm for shuffle** — guarantees no peer ever receives their own
+  face, which is the only shuffle outcome that would break the illusion.
 
-- **`keep_alive=300`, `min_concurrency=0`, `max_concurrency=4`** as class
-  kwargs on the `fal.App` subclass — same style as `sana.py`.
-  `keep_alive=300` because realistic interactive sessions are 5+ minutes
-  but 300 s caps idle cost.
+- **Room state broadcast** — a single `room_state` message is pushed to all peers
+  whenever membership or face assignment changes. This is the single source of
+  truth for the participant list and current face assignments.
 
-- **Per-frame perception timings are pushed over the signaling WebSocket
-  as `TimingOutput` messages**, throttled to roughly 3 Hz from inside the
-  track's `recv()`. The frontend listens for `type: "timing"` in
-  `ws.onmessage` and updates the HUD chips. → `app.py::TimingOutput` and
-  `frontend/src/main.js::applyTimingMessage`.
+- **MessagePack over JSON** for the signaling WebSocket — more compact for binary
+  payloads (SDP, face thumbnails, msgpack frames).
 
-- **Lazy per-layer inference**: single-layer modes only run the one model
-  they need; only `composite` runs all three. The HUD shows `—` for models
-  that weren't called for the current frame rather than padding timings.
+- **`local_python_modules = ["core"]`** packages the local `core/` directory onto
+  the runner. Same pattern as `fal_demos/image/sana.py`.
 
-## VRAM and cost math
+- **`machine_type = "GPU-H100"`** — all three models fit in ~450 MB of VRAM
+  (< 1 % of the H100's 80 GB), leaving headroom for larger crowds or additional models.
 
-| Model                   | Weights | Activations @ 640×480 | Total       |
-| ----------------------- | ------- | --------------------- | ----------- |
-| YOLOv8n                 | ~12 MB  | ~150 MB               | ~160 MB     |
-| Depth Anything V2 Small | ~140 MB | ~300 MB               | ~440 MB     |
-| SegFormer-b0            | ~14 MB  | ~250 MB               | ~260 MB     |
-| **Total**               |         |                       | **~920 MB** |
+## VRAM budget
 
-~920 MB on an 80 GB H100 is ~1.2 %. This is exactly why co-location is the
-right pattern — there is no resource conflict, just amortized loading and
-zero network hops. A single warm runner is strictly cheaper than three
-marketplace endpoints called per frame, because the per-frame cost of three
-model calls over the internal network swamps the cost of keeping one runner
-warm for a session.
+| Model                  | Approx. VRAM |
+| ---------------------- | ------------ |
+| YOLOv8n                | ~160 MB      |
+| InsightFace (buffalo_l)| ~160 MB      |
+| inswapper_128_fp16     | ~128 MB      |
+| GFPGAN (optional)      | loaded on demand |
+| **Total (no enhance)** | **~450 MB**  |
 
-> Fill in exact $/GPU-second on the day from fal's pricing page; the ratio
-> holds regardless of the absolute numbers.
+~450 MB on an 80 GB H100 is < 1 %. The co-location pattern has no resource
+conflict — it is strictly cheaper than calling separate marketplace endpoints
+per frame because the per-frame network cost of three hops swamps the idle cost
+of keeping one runner warm.
 
 ## What this isn't
 
-- **Not a multi-GPU demo.** For multi-GPU, use `fal.distributed` and see
-  `fal_demos/image/parallel_sdxl`. This demo is about co-locating several
-  models on one GPU, which is a different pattern.
-- **Not a generative demo.** An SDXL-Turbo img2img version of this is a
-  different fork. The pitch here is the _perception stack_, not a
-  prompt-driven transform.
-- **Not optimized for max framerate.** TensorRT or ONNX conversions would
-  shave another 30 % off the per-frame budget. That's a hardening pass,
-  not a one-day tutorial extension.
-- **Not production-hardened.** No rate limiting, no auth on the realtime
-  endpoint beyond fal's defaults, no observability beyond `print`s. A real
-  deployment would add all three.
-
-## How this could merge into fal-demos
-
-The code in `app.py` and `core/` could land in
-`fal-demos/video/multi_perception_webrtc/` alongside `yolo_webcam_webrtc/`
-and `matrix_webrtc/`. The frontend is a fork of
-`yolo_webcam_webrtc/frontend` with three additions clearly diff-able:
-
-1. A `.layer-toggles` button row in `index.html`
-2. A `.hud` chip row in `index.html` + chip styling in `style.css`
-3. A `LayerToggleInput` send path and a `type: "timing"` / `type: "runner_info"`
-   handler in `main.js`
-
-On the backend, `app.py` is ~150 lines of new code on top of a verbatim copy
-of `yolo.py`'s signaling handler and Metered TURN bootstrap. The minimal diff
-is: three Pydantic types added to the input/output unions, one handler
-branch (`handle_layer`), one replacement of `create_yolo_track` with
-`create_multi_perception_track`, and the extra model loads in `setup()`.
-
-If fal wants to publish this as the next realtime example, the work is
-renaming the namespace and writing two paragraphs of intro.
+- **Not a multi-GPU demo.** For multi-GPU, use `fal.distributed`. This demo is
+  about co-locating several models on one GPU.
+- **Not optimized for max framerate.** TensorRT or ONNX conversions would reduce
+  per-frame budget further. That's a hardening pass.
+- **Not production-hardened.** No auth, no rate limiting, no observability beyond
+  `print`s. A real deployment would add all three.
 
 ## Running it
 
-### Option A — Local mode (any GPU machine / Mac)
-
-No fal Serverless account required. The app runs entirely on the local
-machine via `fal run --local`.
-
-**Prerequisites**
+### Prerequisites (both options)
 
 - [uv](https://docs.astral.sh/uv/) (Python package manager)
 - Node.js 18+
 - Metered TURN credentials (`METERED_TURN_SECRET_KEY`, `METERED_TURN_LABEL`)
 
-**Setup**
+### Option A — Local mode
+
+No fal account required. The app runs entirely on the local machine via `fal run --local`.
 
 ```bash
 cp .env.example .env
 # Edit .env and fill in your Metered TURN credentials.
 
-uv sync              # installs fal + all runtime deps, generates uv.lock
+uv sync
 ```
 
 **Backend** (Terminal 1)
@@ -172,7 +127,7 @@ uv run --env-file .env fal run --local app.py::MultiPerceptionWebRTC
 
 The WebSocket server starts on `ws://localhost:8080/realtime`. Device is
 auto-detected: CUDA on NVIDIA GPUs, MPS on Apple Silicon, CPU fallback.
-YOLO weights are auto-downloaded on first run (~6 MB).
+YOLO and InsightFace weights are downloaded on first run.
 
 **Frontend** (Terminal 2)
 
@@ -182,37 +137,23 @@ npm install
 npm run dev
 ```
 
-Open the Vite URL (default `http://localhost:5173`). The "Local mode"
-checkbox is on by default — just click **Start**.
+Open `http://localhost:5173`. Enter a username and click **Join** to enter the room.
 
-**Remote GPU notes**: if running on a remote machine, expose ports 8080
-(backend WS) and 5173 (Vite) and set the Backend URL field in the frontend
-to `ws://<public-ip>:8080` instead of `ws://localhost:8080`.
+**Remote GPU notes**: expose ports 8080 and 5173, set the Backend URL in the
+frontend to `ws://<public-ip>:8080`.
 
-**Apple Silicon notes**: runs on MPS. Expect slower inference than a
-dedicated NVIDIA GPU but fully functional for development and testing.
+**Apple Silicon notes**: runs on MPS. Inference is slower than a dedicated NVIDIA
+GPU but fully functional for development and testing.
 
 ### Option B — fal Serverless (cloud)
-
-**Prerequisites**
-
-- A fal account with Serverless access
-- A Metered TURN account — hard-fails in `setup()` if
-  `METERED_TURN_SECRET_KEY` or `METERED_TURN_LABEL` are not set
-- `yolov8n.pt` available at `/data/yolov8n.pt` on the fal runner, or set
-  `YOLO_MODEL_PATH` to a path Ultralytics can auto-download to
 
 ```bash
 fal secrets set METERED_TURN_SECRET_KEY=<your-key>
 fal secrets set METERED_TURN_LABEL=<your-label>
-```
 
-**Backend**
-
-```bash
-fal run app.py              # ephemeral, prints an app id you can hit
+fal run app.py        # ephemeral
 # or
-fal deploy app.py           # persistent endpoint
+fal deploy app.py     # persistent endpoint
 ```
 
 **Frontend**
@@ -223,6 +164,17 @@ npm install
 FAL_KEY=<your-fal-key> npm run dev
 ```
 
-Uncheck "Local mode" in the UI, paste your app id (e.g.
-`myuser/multi-perception-webrtc`) into the Endpoint field, and click
-**Start**.
+Paste your app endpoint into the Backend URL field in the UI and click **Join**.
+
+## Using the app
+
+1. **Join** — enter a username and click Join. Your local video appears immediately.
+2. **Upload a face** — drag a photo onto the face upload zone or click to browse.
+   InsightFace detects the largest face and stores it as your source. All faces
+   in the broadcast stream are swapped to match it.
+3. **Enhancement** — toggle the Enhance switch to apply GFPGAN to swapped faces.
+4. **Shuffle** — click Shuffle in the room panel to randomly reassign all captured
+   peer faces. Each participant gets someone else's face.
+5. **YOLO** — toggle Detection to overlay YOLOv8n bounding boxes on the stream.
+6. **Clear face** — click the × on the face upload zone to remove your source face
+   and stop swapping.
