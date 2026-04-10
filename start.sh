@@ -26,8 +26,18 @@ echo "Starting nginx on port 8888..."
 nginx -g "daemon off;" &
 NGINX_PID=$!
 
+# Start Cloudflare Tunnel if token is set
+CF_PID=""
+if [ -n "$CLOUDFLARE_TUNNEL_TOKEN" ]; then
+    echo "Starting Cloudflare Tunnel..."
+    cloudflared tunnel --no-autoupdate run --token "$CLOUDFLARE_TUNNEL_TOKEN" &
+    CF_PID=$!
+else
+    echo "CLOUDFLARE_TUNNEL_TOKEN not set; skipping tunnel."
+fi
+
 # Trap signals for clean shutdown
-trap "kill $FAL_PID $NGINX_PID 2>/dev/null; exit 0" SIGTERM SIGINT
+trap "kill $FAL_PID $NGINX_PID $CF_PID 2>/dev/null; exit 0" SIGTERM SIGINT
 
 echo "All services running. Frontend: http://0.0.0.0:8888"
 wait

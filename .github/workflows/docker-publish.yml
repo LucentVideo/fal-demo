@@ -34,8 +34,6 @@ jobs:
           platforms: linux/amd64
           build-args: |
             HF_TOKEN=${{ secrets.HF_TOKEN }}
-          tags: |
-            ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:${{ github.sha }}
+          tags: ${{ env.IMAGE }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
