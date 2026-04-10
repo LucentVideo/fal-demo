@@ -7,20 +7,10 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
-import re
 import sys
 
-# Match the fragile list comprehension; capture indentation (fal uses 4 spaces).
-_PATTERN = re.compile(
-    r"^(\s*)packages = \[f\"\{dist\.metadata\[\'Name\'\]\}==\{dist\.version\}\" "
-    r"for dist in distributions\(\)\]",
-    re.MULTILINE,
-)
-
-_REPLACEMENT = (
-    r"\1packages = [f\"{dist.metadata['Name']}=={dist.version}\" "
-    r"for dist in distributions() if dist.metadata is not None]"
-)
+OLD = '    packages = [f"{dist.metadata[\'Name\']}=={dist.version}" for dist in distributions()]'
+NEW = '    packages = [f"{dist.metadata[\'Name\']}=={dist.version}" for dist in distributions() if dist.metadata is not None]'
 
 
 def main() -> None:
@@ -33,11 +23,11 @@ def main() -> None:
     if "if dist.metadata is not None" in text and "_print_python_packages" in text:
         print("fal app.py already patched; skipping")
         return
-    new_text, n = _PATTERN.subn(_REPLACEMENT, text, count=1)
-    if n != 1:
+    if OLD not in text:
         print("Could not find _print_python_packages line to patch", file=sys.stderr)
+        print("Looking for:", repr(OLD), file=sys.stderr)
         sys.exit(1)
-    path.write_text(new_text)
+    path.write_text(text.replace(OLD, NEW, 1))
     print("patched", path)
 
 
