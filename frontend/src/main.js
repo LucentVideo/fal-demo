@@ -72,10 +72,14 @@ backendUrlInput.value = ENV_BACKEND_URL;
 
 const isLocalMode = () => ENV_LOCAL_MODE;
 
-const log = (msg) => {
-  console.log(msg);
-  logEl.textContent = String(msg) + "\n" + logEl.textContent;
+const _t0 = performance.now();
+const tlog = (msg) => {
+  const elapsed = (performance.now() - _t0).toFixed(0);
+  const stamped = `[+${elapsed}ms] ${msg}`;
+  console.log(stamped);
+  logEl.textContent = stamped + "\n" + logEl.textContent;
 };
+const log = tlog;
 
 const setStatus = (text) => {
   statusEl.textContent = text;
@@ -89,6 +93,8 @@ const buildWsUrl = (appId, token) => {
 };
 
 const getTemporaryAuthToken = async (appId) => {
+  log("Fetching fal auth token…");
+  const t = performance.now();
   const response = await fetch("/fal/token", {
     method: "POST",
     headers: {
@@ -107,11 +113,29 @@ const getTemporaryAuthToken = async (appId) => {
   }
 
   const token = await response.json();
+  log(`Token fetched in ${(performance.now() - t).toFixed(0)}ms`);
   if (typeof token !== "string" && token?.detail) {
     return token.detail;
   }
   return token;
 };
+
+// Prefetch token on page load so it's ready by the time the user clicks Join.
+let _prefetchedToken = null;
+let _prefetchedTokenExpires = 0;
+const _prefetchToken = () => {
+  if (isLocalMode()) return;
+  const appId = normalizeAppId(appIdInput.value.trim());
+  if (!appId) return;
+  getTemporaryAuthToken(appId)
+    .then((tok) => {
+      _prefetchedToken = tok;
+      _prefetchedTokenExpires = Date.now() + (TOKEN_EXPIRATION_SECONDS - 10) * 1000;
+      log("Token prefetched (ready for instant join)");
+    })
+    .catch(() => { /* will retry on click */ });
+};
+setTimeout(_prefetchToken, 200);
 
 const resetHud = () => {
   hudRunnerEl.textContent = "runner: —";
@@ -247,12 +271,23 @@ const ensurePeer = async (iceServers) => {
   };
 };
 
+// Pre-acquire camera early so getUserMedia permission dialog doesn't block the join flow.
+let _earlyStreamPromise = null;
+const _warmCamera = () => {
+  if (_earlyStreamPromise) return;
+  _earlyStreamPromise = navigator.mediaDevices
+    .getUserMedia({ video: { width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false })
+    .catch(() => null);
+};
+
 const attachLocalStream = async () => {
   if (localStream) return;
-  localStream = await navigator.mediaDevices.getUserMedia({
-    video: { width: { ideal: 1920 }, height: { ideal: 1080 } },
-    audio: false,
-  });
+  localStream = (_earlyStreamPromise && await _earlyStreamPromise) ||
+    await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false,
+    });
+  _earlyStreamPromise = null;
   localVideo.srcObject = localStream;
   localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
 
@@ -543,9 +578,15 @@ const connectWs = (wsUrl) => {
     negotiatingOffer = true;
     offerSent = true;
     try {
+      let t = performance.now();
       await ensurePeer(pendingIceServers);
+      log(`RTCPeerConnection created in ${(performance.now() - t).toFixed(0)}ms`);
+      t = performance.now();
       await attachLocalStream();
+      log(`getUserMedia + addTrack in ${(performance.now() - t).toFixed(0)}ms`);
+      t = performance.now();
       await sendOffer();
+      log(`Offer sent in ${(performance.now() - t).toFixed(0)}ms`);
       sendWs({ type: "layer", layer: activeLayer });
     } catch (err) {
       offerSent = false;
@@ -664,7 +705,12 @@ const connectWs = (wsUrl) => {
   };
 };
 
+// Start camera acquisition early when user interacts with the join form.
+usernameInput.addEventListener("focus", _warmCamera, { once: true });
+joinOverlay.addEventListener("pointerdown", _warmCamera, { once: true });
+
 startBtn.addEventListener("click", async () => {
+  _warmCamera();
   if (started) return;
   started = true;
   startBtn.disabled = true;
@@ -691,7 +737,13 @@ startBtn.addEventListener("click", async () => {
   }
 
   try {
-    authToken = await getTemporaryAuthToken(appId);
+    if (_prefetchedToken && Date.now() < _prefetchedTokenExpires) {
+      authToken = _prefetchedToken;
+      _prefetchedToken = null;
+      log("Using prefetched token (0ms)");
+    } else {
+      authToken = await getTemporaryAuthToken(appId);
+    }
   } catch (err) {
     log(`Failed to fetch token: ${err.message || err}`);
     stop();
