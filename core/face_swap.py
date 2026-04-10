@@ -11,8 +11,8 @@ Performance notes (Tier 1 optimisations):
   - ``face_app_swap`` (detection-only, 320x320) is used inside
     ``swap_with_source`` — the inswapper only needs bbox + kps from the
     target face and the pre-computed source embedding.
-  - The inswapper ONNX session is recreated with ``enable_cuda_graph=True``
-    to eliminate kernel-launch overhead on the fixed 128x128 input.
+  - The inswapper ONNX session is recreated with ORT_ENABLE_ALL graph
+    optimisations and tuned cuDNN workspace settings.
 """
 
 from __future__ import annotations
@@ -43,12 +43,12 @@ def _download_inswapper() -> str:
     )
 
 
-def _rebuild_session_with_cuda_graph(model) -> None:
-    """Recreate the ONNX Runtime session on *model* with CUDA graphs enabled.
+def _rebuild_session_optimised(model) -> None:
+    """Recreate the ONNX Runtime session on *model* with tuned CUDA settings.
 
-    CUDA graphs capture the full GPU kernel sequence on the first run and
-    replay it on subsequent runs, eliminating per-frame launch overhead.
-    Only safe for fixed-shape inputs (inswapper is always [1,3,128,128]).
+    Applies ORT graph-level optimisations and aggressive cuDNN workspace
+    settings.  Does NOT enable CUDA graphs (that requires IOBinding which
+    insightface's internal ``session.run()`` calls don't use).
     """
     try:
         import onnxruntime as ort
@@ -65,7 +65,6 @@ def _rebuild_session_with_cuda_graph(model) -> None:
             (
                 "CUDAExecutionProvider",
                 {
-                    "enable_cuda_graph": "1",
                     "cudnn_conv_algo_search": "EXHAUSTIVE",
                     "cudnn_conv_use_max_workspace": "1",
                     "arena_extend_strategy": "kSameAsRequested",
@@ -76,9 +75,9 @@ def _rebuild_session_with_cuda_graph(model) -> None:
         model.session = ort.InferenceSession(
             model_path, sess_options=sess_opts, providers=providers,
         )
-        log.info(f"rebuilt inswapper session with CUDA graphs enabled")
+        log.info("rebuilt inswapper session with ORT_ENABLE_ALL optimisations")
     except Exception as exc:
-        log.warning(f"failed to enable CUDA graphs on inswapper: {exc}")
+        log.warning(f"failed to rebuild inswapper session: {exc}")
 
 
 class FaceSwapper:
@@ -112,7 +111,7 @@ class FaceSwapper:
         self.swapper = insightface.model_zoo.get_model(model_path)
 
         if device == "cuda":
-            _rebuild_session_with_cuda_graph(self.swapper)
+            _rebuild_session_optimised(self.swapper)
 
         self._enhancer: Any = None
         self.enhance_enabled = False
