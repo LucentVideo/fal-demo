@@ -70,7 +70,7 @@ class LayerToggleInput(BaseModel):
     """Switch which model layer the runner composes into the outgoing frame."""
 
     type: Literal["layer"]
-    layer: Literal["detection", "depth", "segmentation", "composite"]
+    layer: Literal["detection"]
 
 
 class JoinInput(BaseModel):
@@ -147,8 +147,6 @@ class TimingOutput(BaseModel):
     type: Literal["timing"]
     layer: str
     yolo_ms: float | None = None
-    depth_ms: float | None = None
-    seg_ms: float | None = None
     total_ms: float
 
 
@@ -227,10 +225,8 @@ class MultiPerceptionWebRTC(
         "opencv-python",
         "pydantic",
         "ultralytics",
-        # Perception stack for Depth Anything V2 + SegFormer.
         "torch==2.6.0",
         "torchvision==0.21.0",
-        "transformers==4.51.3",
         "pillow",
         "numpy<2",  # ultralytics + torch 2.6 still prefer numpy 1.x
         # Face swap stack
@@ -254,11 +250,7 @@ class MultiPerceptionWebRTC(
 
         from core import detect_device
         from core.face_swap import FaceSwapper
-        from core.perception import (
-            DepthEstimator,
-            SemanticSegmenter,
-            YoloDetector,
-        )
+        from core.perception import YoloDetector
         from core.room import Room
 
         self._metered_secret_key = os.getenv("METERED_TURN_SECRET_KEY")
@@ -284,25 +276,18 @@ class MultiPerceptionWebRTC(
         print(f"setup: device={device}, yolo_weights={yolo_weights}")
 
         yolo = YoloDetector(weights_path=yolo_weights, device=device)
-        depth_model = DepthEstimator(device=device)
-        seg_model = SemanticSegmenter(device=device)
 
         dummy = np.zeros((480, 640, 3), dtype=np.uint8)
         _ = yolo(dummy)
-        _ = depth_model(dummy)
-        _ = seg_model(dummy)
 
         face_swapper = FaceSwapper(device=device)
         face_swapper.warmup()
 
-        self.room = Room(
-            yolo=yolo, depth=depth_model, seg=seg_model,
-            face_swapper=face_swapper,
-        )
+        self.room = Room(yolo=yolo, face_swapper=face_swapper)
 
         self._runner_id = os.environ.get("FAL_RUNNER_ID") or str(uuid.uuid4())[:8]
         self._loaded_models = [
-            "yolov8n", "depth-anything-v2-small", "segformer-b0",
+            "yolov8n",
             "insightface-buffalo_l", "inswapper_128_fp16",
         ]
 

@@ -164,15 +164,13 @@ GRID_H = 480
 class Room:
     """Single multiplayer room shared across all WebSocket handlers."""
 
-    def __init__(self, *, yolo: Any, depth: Any, seg: Any, face_swapper: Any = None) -> None:
+    def __init__(self, *, yolo: Any, face_swapper: Any = None) -> None:
         self.peers: dict[str, PeerState] = {}
         self._peer_order: list[str] = []
         self.active_layer: str = "detection"
         self.broadcaster = FrameBroadcaster()
 
         self._yolo = yolo
-        self._depth = depth
-        self._seg = seg
         self.face_swapper = face_swapper
 
         self._processing_task: asyncio.Task | None = None
@@ -390,8 +388,6 @@ class Room:
                         "type": "timing",
                         "layer": mode_label,
                         "yolo_ms": model_ms_total if not use_face_swap else None,
-                        "depth_ms": None,
-                        "seg_ms": None,
                         "total_ms": total_ms,
                     }
                 )
