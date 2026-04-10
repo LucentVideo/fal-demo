@@ -166,6 +166,28 @@ GRID_W = 1920
 GRID_H = 1080
 
 
+def _letterbox(img, target_w: int, target_h: int):
+    """Resize *img* to fit inside target_w x target_h, preserving aspect ratio.
+
+    The image is scaled uniformly and centered; remaining area is black.
+    """
+    import cv2
+
+    src_h, src_w = img.shape[:2]
+    scale = min(target_w / src_w, target_h / src_h)
+    new_w = int(src_w * scale)
+    new_h = int(src_h * scale)
+
+    resized = cv2.resize(img, (new_w, new_h))
+
+    import numpy as np
+    cell = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+    pad_y = (target_h - new_h) // 2
+    pad_x = (target_w - new_w) // 2
+    cell[pad_y : pad_y + new_h, pad_x : pad_x + new_w] = resized
+    return cell
+
+
 class Room:
     """Single multiplayer room shared across all WebSocket handlers."""
 
@@ -477,7 +499,7 @@ class Room:
                 except Exception:
                     annotated = img
 
-                cell = cv2.resize(annotated, (cell_w, cell_h))
+                cell = _letterbox(annotated, cell_w, cell_h)
                 cv2.putText(
                     cell,
                     peer.username,
