@@ -214,7 +214,7 @@ def main():
 
     # --- 3. Optimised Swap ---
     if swapper.source_face is not None:
-        print("\n[3/4] Benchmarking swap (det-only 320 + inswapper + CUDA graph)...")
+        print("\n[3/4] Benchmarking swap (det-only 320 + inswapper)...")
         swap_times = benchmark_swap(swapper, frame, swapper.source_face, n)
         report(f"Swap OPTIMISED ({n_faces_swap} face(s), {w}x{h})", swap_times)
     else:

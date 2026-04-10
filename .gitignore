@@ -4,3 +4,5 @@ __pycache__/
 .venv/
 .env
 .env.*
+gfpgan/weights/detection_Resnet50_Final.pth
+gfpgan/weights/parsing_parsenet.pth
