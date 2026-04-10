@@ -26,6 +26,48 @@ if not log.handlers:
     log.addHandler(_h)
 
 
+class LatestFrameRelay:
+    """Continuously drains a WebRTC track, keeping only the most recent frame.
+
+    Without this, ``track.recv()`` returns the *next* buffered frame (FIFO),
+    so frames pile up when the processing loop is slower than the sender's
+    frame-rate.  With N peers the backlog grows fastest for the earliest
+    joiner — exactly the lag pattern reported.
+
+    The relay runs a tight background task that calls ``track.recv()`` in a
+    loop and atomically overwrites ``self.latest``.  The processing loop
+    reads ``grab()`` which returns the newest frame instantly (or *None* if
+    no frame has arrived yet).
+    """
+
+    def __init__(self, track: Any) -> None:
+        self._track = track
+        self.latest: Any = None
+        self._task: asyncio.Task | None = None
+
+    def start(self) -> None:
+        if self._task is None or self._task.done():
+            self._task = asyncio.ensure_future(self._drain())
+
+    def stop(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+
+    async def _drain(self) -> None:
+        """Read frames as fast as the track produces them, keep only the last."""
+        try:
+            while True:
+                frame = await self._track.recv()
+                self.latest = frame          # atomic reference swap
+        except (asyncio.CancelledError, Exception):
+            return
+
+    def grab(self) -> Any:
+        """Return the most recent frame, or None if nothing arrived yet."""
+        return self.latest
+
+
 @dataclass
 class PeerState:
     """Mutable state for a single connected peer."""
@@ -33,6 +75,7 @@ class PeerState:
     peer_id: str
     username: str
     video_track: Any = None
+    frame_relay: LatestFrameRelay | None = None
     outgoing_queue: asyncio.Queue | None = None
 
 
@@ -152,7 +195,9 @@ class Room:
         self._ensure_processing()
 
     def remove_peer(self, peer_id: str) -> None:
-        self.peers.pop(peer_id, None)
+        peer = self.peers.pop(peer_id, None)
+        if peer is not None and peer.frame_relay is not None:
+            peer.frame_relay.stop()
         with suppress(ValueError):
             self._peer_order.remove(peer_id)
         log.info(f"remove_peer {peer_id}, remaining={list(self.peers.keys())}")
@@ -162,8 +207,14 @@ class Room:
     def set_peer_track(self, peer_id: str, track: Any) -> None:
         peer = self.peers.get(peer_id)
         if peer is not None:
+            # Stop any previous relay for this peer.
+            if peer.frame_relay is not None:
+                peer.frame_relay.stop()
             peer.video_track = track
-            log.info(f"set_peer_track {peer_id}")
+            relay = LatestFrameRelay(track)
+            relay.start()
+            peer.frame_relay = relay
+            log.info(f"set_peer_track {peer_id} — relay started")
         else:
             log.info(f"set_peer_track {peer_id} IGNORED — peer not registered")
 
@@ -234,7 +285,7 @@ class Room:
             peers_with_tracks = [
                 (pid, self.peers[pid])
                 for pid in self._peer_order
-                if pid in self.peers and self.peers[pid].video_track is not None
+                if pid in self.peers and self.peers[pid].frame_relay is not None
             ]
             n = len(peers_with_tracks)
 
@@ -250,13 +301,21 @@ class Room:
                 await asyncio.sleep(0.1)
                 continue
 
-            raw_frames = await asyncio.gather(
-                *(
-                    asyncio.wait_for(peer.video_track.recv(), timeout=0.5)
-                    for _, peer in peers_with_tracks
-                ),
-                return_exceptions=True,
-            )
+            # Yield so relay drain tasks can run — critical on CPU/MPS
+            # where the model inference below blocks the event loop and
+            # would otherwise starve the relays.
+            await asyncio.sleep(0)
+
+            # Grab the latest frame from each peer's relay — instant, no
+            # waiting, no buffer accumulation.  If a relay hasn't received
+            # its first frame yet we get None and skip that peer below.
+            raw_frames = [peer.frame_relay.grab() for _, peer in peers_with_tracks]
+
+            # If every relay returned None (no frames arrived yet), yield
+            # briefly instead of busy-spinning.
+            if all(f is None for f in raw_frames):
+                await asyncio.sleep(0.01)
+                continue
 
             cols = math.ceil(math.sqrt(n))
             rows = math.ceil(n / cols)
@@ -273,7 +332,7 @@ class Room:
             )
 
             for i, (pid, peer) in enumerate(peers_with_tracks):
-                if isinstance(raw_frames[i], BaseException):
+                if raw_frames[i] is None:
                     continue
 
                 img = raw_frames[i].to_ndarray(format="bgr24")
