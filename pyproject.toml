@@ -22,6 +22,10 @@ dependencies = [
     "onnxruntime",
     "huggingface_hub",
     "gfpgan",
+    # GPU post-processing for inswapper paste_back (Dockerfile installs the
+    # CUDA-12 wheel; pyproject lists the meta package so local CPU dev still
+    # resolves cleanly via the optional fall-back path in face_swap.py).
+    "cupy-cuda12x; platform_system == 'Linux'",
     # Shared
     "pydantic>=2.0",
     "numpy<2",

@@ -39,6 +39,10 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
 RUN pip install --no-cache-dir onnxruntime-gpu \
         --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
 
+# cupy-cuda12x for GPU-side post-processing in the face-swap path
+# (replaces the CPU affine warp + mask blur in inswapper paste_back).
+RUN pip install --no-cache-dir cupy-cuda12x
+
 # fal calls _print_python_packages() at startup; some base-image dists have metadata=None → TypeError.
 COPY scripts/patch-fal-app-metadata.py /tmp/patch-fal-app-metadata.py
 RUN python /tmp/patch-fal-app-metadata.py && rm -f /tmp/patch-fal-app-metadata.py

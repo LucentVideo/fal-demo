@@ -102,6 +102,181 @@ def _rebuild_session_optimised(model) -> None:
         log.warning(f"failed to rebuild inswapper session: {exc}")
 
 
+def _build_gpu_paste_back():
+    """Build a GPU replacement for ``INSwapper.get(paste_back=True)``.
+
+    The upstream method (``insightface/model_zoo/inswapper.py``) runs the ONNX
+    swap on GPU but does **all** of the post-processing — three full-frame
+    affine warps, an erode, a dilate, two Gaussian blurs, and the final alpha
+    blend — on CPU via numpy/OpenCV.  At 640×480 with one face per frame
+    that's a few ms of CPU work *and* a forced GPU→CPU sync on the swap
+    output every frame.
+
+    This factory returns a drop-in ``get`` method that keeps the post-process
+    on the GPU using ``cupy`` + ``cupyx.scipy.ndimage``.  Returns ``None`` if
+    cupy isn't importable, so the caller can fall back to the CPU path.
+
+    Notes on correctness vs. the upstream code:
+      - ``cv2.warpAffine(src, IM, dsize)`` (no WARP_INVERSE_MAP) inverts ``IM``
+        internally, so the *effective* inverse map is the original ``M``.
+        ``cupyx.scipy.ndimage.affine_transform`` already takes an inverse map,
+        so we pass ``M`` directly (not ``IM``).
+      - cv2's 2×3 ``M`` is in ``(x, y)`` order; ndimage uses ``(y, x)``.  See
+        the matrix swap below.
+      - ``cv2.GaussianBlur(ksize=k, sigma=0)`` derives
+        ``sigma = 0.3*((k-1)*0.5 - 1) + 0.8``.  We compute the same sigma so
+        the blur strength matches the upstream behaviour.
+      - The upstream ``fake_diff`` mask is computed and then *never used* in
+        the final blend (the line that would consume it is commented out).
+        We skip computing it entirely.
+    """
+    try:
+        import cupy as cp
+        from cupyx.scipy.ndimage import (
+            affine_transform,
+            gaussian_filter,
+            grey_erosion,
+        )
+    except Exception as exc:
+        log.warning(f"cupy unavailable, GPU paste_back disabled: {exc}")
+        return None
+
+    import cv2
+    from insightface.utils import face_align
+
+    def _gpu_get(self, img, target_face, source_face, paste_back=True):
+        aimg, M = face_align.norm_crop2(img, target_face.kps, self.input_size[0])
+        blob = cv2.dnn.blobFromImage(
+            aimg,
+            1.0 / self.input_std,
+            self.input_size,
+            (self.input_mean, self.input_mean, self.input_mean),
+            swapRB=True,
+        )
+        latent = source_face.normed_embedding.reshape((1, -1))
+        latent = np.dot(latent, self.emap)
+        latent /= np.linalg.norm(latent)
+        pred = self.session.run(
+            self.output_names,
+            {self.input_names[0]: blob, self.input_names[1]: latent},
+        )[0]
+
+        # Move pred to GPU as float32 BGR (the upstream model emits RGB; flip
+        # the channel axis with fancy indexing so the result is contiguous).
+        pred_gpu = cp.asarray(pred, dtype=cp.float32)  # (1, 3, h, w)
+        bgr_fake_gpu = cp.clip(
+            pred_gpu[0, ::-1].transpose(1, 2, 0) * 255.0, 0.0, 255.0,
+        )
+        bgr_fake_gpu = cp.ascontiguousarray(bgr_fake_gpu)
+
+        if not paste_back:
+            bgr_fake_np = cp.asnumpy(bgr_fake_gpu).astype(np.uint8)
+            return bgr_fake_np, M
+
+        target_h, target_w = img.shape[:2]
+        aimg_h, aimg_w = aimg.shape[:2]
+
+        # Upload target frame as uint8 (1× bandwidth) and cast on device.
+        target_gpu = cp.asarray(img).astype(cp.float32)
+
+        # cv2 forward 2×3 M maps target → crop in (x, y) order.  ndimage's
+        # affine_transform takes an inverse map in (y, x) order, so:
+        matrix2 = cp.asarray(
+            [[M[1, 1], M[1, 0]], [M[0, 1], M[0, 0]]],
+            dtype=cp.float32,
+        )
+        offset2 = cp.asarray([M[1, 2], M[0, 2]], dtype=cp.float32)
+
+        # Warp the swap output back into the target frame, per channel so we
+        # don't pay for spurious 3-D interpolation along the channel axis.
+        bgr_fake_warped = cp.empty((target_h, target_w, 3), dtype=cp.float32)
+        for c in range(3):
+            bgr_fake_warped[:, :, c] = affine_transform(
+                bgr_fake_gpu[:, :, c],
+                matrix2,
+                offset=offset2,
+                output_shape=(target_h, target_w),
+                order=1,
+                mode="constant",
+                cval=0.0,
+            )
+
+        # Build the alpha mask by warping a constant-255 plate the same way.
+        img_white_src = cp.full((aimg_h, aimg_w), 255.0, dtype=cp.float32)
+        img_mask = affine_transform(
+            img_white_src,
+            matrix2,
+            offset=offset2,
+            output_shape=(target_h, target_w),
+            order=1,
+            mode="constant",
+            cval=0.0,
+        )
+        img_mask = cp.where(img_mask > 20.0, 255.0, img_mask)
+
+        # mask_size estimate (matches upstream): bbox of pixels at 255 in the
+        # warped, thresholded mask.  One small host sync per face.
+        mask_inds_y, mask_inds_x = cp.where(img_mask == 255.0)
+        if mask_inds_y.size == 0:
+            return img.copy()
+        mh = int((mask_inds_y.max() - mask_inds_y.min()).get())
+        mw = int((mask_inds_x.max() - mask_inds_x.min()).get())
+        mask_size = int(np.sqrt(mh * mw))
+
+        k_erode = max(mask_size // 10, 10)
+        img_mask = grey_erosion(img_mask, size=(k_erode, k_erode))
+
+        # cv2.GaussianBlur(k, sigma=0) → sigma = 0.3*((k-1)/2 - 1) + 0.8.
+        # Upstream's k is (2*kk+1), so sigma simplifies to 0.3*(kk-1) + 0.8.
+        kk1 = max(mask_size // 20, 5)
+        sigma1 = 0.3 * (kk1 - 1) + 0.8
+        img_mask = gaussian_filter(img_mask, sigma=sigma1)
+
+        img_mask = (img_mask / 255.0)[:, :, None]
+
+        fake_merged = img_mask * bgr_fake_warped + (1.0 - img_mask) * target_gpu
+        fake_merged = cp.clip(fake_merged, 0.0, 255.0).astype(cp.uint8)
+        return cp.asnumpy(fake_merged)
+
+    return _gpu_get
+
+
+_GPU_PASTE_BACK_GET = None
+
+
+def _gpu_paste_back_enabled() -> bool:
+    """Toggle for the cupy paste_back path.
+
+    Set ``FAL_GPU_PASTE_BACK=0`` (or ``false`` / ``no`` / ``off``) to force
+    the original insightface CPU code path.  Default is enabled — this is
+    the whole point of the perf branch — but the kill-switch is here so any
+    visual regression in production can be reverted without a redeploy.
+    """
+    import os
+
+    raw = os.environ.get("FAL_GPU_PASTE_BACK", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off", "")
+
+
+def _patch_swapper_paste_back_gpu(swapper) -> None:
+    """Replace ``swapper.get`` with the cupy-backed version, if available
+    and not disabled via ``FAL_GPU_PASTE_BACK=0``."""
+    if not _gpu_paste_back_enabled():
+        log.info("inswapper paste_back forced to CPU (FAL_GPU_PASTE_BACK=0)")
+        return
+
+    global _GPU_PASTE_BACK_GET
+    if _GPU_PASTE_BACK_GET is None:
+        _GPU_PASTE_BACK_GET = _build_gpu_paste_back()
+    if _GPU_PASTE_BACK_GET is None:
+        log.info("inswapper paste_back staying on CPU (no cupy)")
+        return
+    import types
+
+    swapper.get = types.MethodType(_GPU_PASTE_BACK_GET, swapper)
+    log.info("inswapper.get patched: paste_back now runs on GPU via cupy")
+
+
 class FaceSwapper:
     """Full face-swap pipeline: detect -> swap -> (optional) enhance."""
 
@@ -134,6 +309,7 @@ class FaceSwapper:
 
         if device == "cuda":
             _rebuild_session_optimised(self.swapper)
+            _patch_swapper_paste_back_gpu(self.swapper)
 
         # Download GFPGAN weights and load the enhancer eagerly so startup
         # fails fast rather than on the first enhanced frame.
