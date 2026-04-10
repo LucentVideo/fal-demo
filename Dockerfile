@@ -78,6 +78,12 @@ print(f'inswapper downloaded to {path}') \
 # Clear the build arg so it doesn't leak into the runtime image
 ENV HF_TOKEN=""
 
+# ── cloudflared (Cloudflare Tunnel) ───────────────────────────────────
+RUN curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
+        -o /tmp/cloudflared.deb \
+    && dpkg -i /tmp/cloudflared.deb \
+    && rm -f /tmp/cloudflared.deb
+
 # ── nginx + start script ─────────────────────────────────────────────
 # Replace the base image's nginx.conf entirely (it has its own server blocks that conflict).
 COPY nginx.conf /etc/nginx/nginx.conf
