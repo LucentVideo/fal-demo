@@ -43,6 +43,31 @@ def _download_inswapper() -> str:
     )
 
 
+_GFPGAN_URL = "https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth"
+_GFPGAN_MIN_BYTES = 300_000_000  # ~348 MB expected
+
+
+def _download_gfpgan() -> str:
+    """Download GFPGANv1.4.pth weights, returning the local path."""
+    import os
+    import urllib.request
+
+    cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "gfpgan")
+    os.makedirs(cache_dir, exist_ok=True)
+    model_path = os.path.join(cache_dir, "GFPGANv1.4.pth")
+
+    if os.path.exists(model_path) and os.path.getsize(model_path) < _GFPGAN_MIN_BYTES:
+        log.warning("removing incomplete GFPGANv1.4 download")
+        os.remove(model_path)
+
+    if not os.path.exists(model_path):
+        log.info(f"downloading GFPGANv1.4 weights to {model_path} ...")
+        urllib.request.urlretrieve(_GFPGAN_URL, model_path)
+        log.info("download complete")
+
+    return model_path
+
+
 def _rebuild_session_optimised(model) -> None:
     """Recreate the ONNX Runtime session on *model* with tuned CUDA settings.
 
@@ -113,7 +138,27 @@ class FaceSwapper:
         if device == "cuda":
             _rebuild_session_optimised(self.swapper)
 
+        # Download GFPGAN weights and load the enhancer eagerly so startup
+        # fails fast rather than on the first enhanced frame.
+        import sys
+        import torchvision.transforms.functional as _F
+        sys.modules.setdefault("torchvision.transforms.functional_tensor", _F)
+
         self._enhancer: Any = None
+        try:
+            from gfpgan import GFPGANer
+
+            gfpgan_path = _download_gfpgan()
+            self._enhancer = GFPGANer(
+                model_path=gfpgan_path,
+                upscale=1,
+                arch="clean",
+                channel_multiplier=2,
+            )
+            log.info("GFPGAN enhancer loaded")
+        except Exception as exc:
+            log.warning(f"GFPGAN unavailable (non-fatal): {exc}")
+
         self.enhance_enabled = False
         self.source_face: Any = None
 
@@ -165,25 +210,7 @@ class FaceSwapper:
             return frame_bgr
         return self.swap_with_source(frame_bgr, self.source_face)
 
-    def _ensure_enhancer(self) -> None:
-        if self._enhancer is not None:
-            return
-        try:
-            from gfpgan import GFPGANer
-
-            self._enhancer = GFPGANer(
-                model_path="GFPGANv1.4.pth",
-                upscale=1,
-                arch="clean",
-                channel_multiplier=2,
-            )
-            log.info("GFPGAN enhancer loaded")
-        except Exception as exc:
-            log.warning(f"failed to load GFPGAN: {exc}")
-            self._enhancer = None
-
     def _enhance(self, frame_bgr: np.ndarray) -> np.ndarray:
-        self._ensure_enhancer()
         if self._enhancer is None:
             return frame_bgr
         try:
