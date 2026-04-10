@@ -1,9 +1,10 @@
 """Benchmark: FaceSwap FPS on current GPU.
 
-Measures three stages independently:
-  1. Face detection only (buffalo_l)
-  2. Face swap (detection + inswapper)
-  3. Full pipeline with GFPGAN enhancement
+Measures four stages independently:
+  1. Face detection — full buffalo_l (all sub-models)
+  2. Face detection — swap-path (detection-only, 320x320)
+  3. Face swap (optimised: det-only 320 + inswapper w/ CUDA graph)
+  4. Full pipeline with GFPGAN enhancement
 
 Usage:
   python benchmark_faceswap.py [--frames 200] [--res 640x480]
@@ -76,7 +77,8 @@ def load_frame(args, w: int, h: int) -> np.ndarray:
     return cv2.resize(frame, (w, h))
 
 
-def benchmark_detection(swapper, frame, n_frames, warmup=20):
+def benchmark_detection_full(swapper, frame, n_frames, warmup=20):
+    """Full buffalo_l detection (all sub-models)."""
     for _ in range(warmup):
         swapper.face_app.get(frame)
     times = []
@@ -88,13 +90,26 @@ def benchmark_detection(swapper, frame, n_frames, warmup=20):
     return np.array(times), n_faces
 
 
-def benchmark_swap(swapper, frame, source_face, n_frames, warmup=20):
+def benchmark_detection_swap(swapper, frame, n_frames, warmup=20):
+    """Lightweight detection-only path used during swap (320x320)."""
     for _ in range(warmup):
-        swapper.swap_with_source(frame, source_face)
+        swapper.face_app_swap.get(frame)
     times = []
     for _ in range(n_frames):
         t0 = time.perf_counter()
-        swapper.swap_with_source(frame, source_face)
+        swapper.face_app_swap.get(frame)
+        times.append(time.perf_counter() - t0)
+    n_faces = len(swapper.face_app_swap.get(frame))
+    return np.array(times), n_faces
+
+
+def benchmark_swap(swapper, frame, source_face, n_frames, warmup=20):
+    for _ in range(warmup):
+        swapper.swap_with_source(frame, source_face, copy=False)
+    times = []
+    for _ in range(n_frames):
+        t0 = time.perf_counter()
+        swapper.swap_with_source(frame, source_face, copy=False)
         times.append(time.perf_counter() - t0)
     return np.array(times)
 
@@ -102,11 +117,11 @@ def benchmark_swap(swapper, frame, source_face, n_frames, warmup=20):
 def benchmark_enhanced(swapper, frame, source_face, n_frames, warmup=20):
     swapper.enhance_enabled = True
     for _ in range(warmup):
-        swapper.swap_with_source(frame, source_face)
+        swapper.swap_with_source(frame, source_face, copy=False)
     times = []
     for _ in range(n_frames):
         t0 = time.perf_counter()
-        swapper.swap_with_source(frame, source_face)
+        swapper.swap_with_source(frame, source_face, copy=False)
         times.append(time.perf_counter() - t0)
     swapper.enhance_enabled = False
     return np.array(times)
@@ -115,9 +130,9 @@ def benchmark_enhanced(swapper, frame, source_face, n_frames, warmup=20):
 def report(label, times):
     ms = times * 1000
     fps = 1.0 / times
-    print(f"\n{'=' * 55}")
+    print(f"\n{'=' * 60}")
     print(f"  {label}")
-    print(f"{'=' * 55}")
+    print(f"{'=' * 60}")
     print(f"  Frames:  {len(times)}")
     print(f"  Mean:    {ms.mean():.1f} ms  ({fps.mean():.1f} FPS)")
     print(f"  Median:  {np.median(ms):.1f} ms  ({np.median(fps):.1f} FPS)")
@@ -145,9 +160,9 @@ def main():
     w, h = map(int, args.res.split("x"))
     n = args.frames
 
-    print("=" * 55)
-    print("  FaceSwap Benchmark")
-    print("=" * 55)
+    print("=" * 60)
+    print("  FaceSwap Benchmark (Tier 1 optimised)")
+    print("=" * 60)
     get_gpu_info()
     print(f"Resolution: {w}x{h}")
     print(f"Frames per test: {n}")
@@ -163,7 +178,7 @@ def main():
     # Load frame
     frame = load_frame(args, w, h)
 
-    # Detect faces
+    # Detect faces (full analyser for source embedding)
     faces = swapper.face_app.get(frame)
     if faces:
         print(f"Detected {len(faces)} face(s) in frame")
@@ -184,42 +199,51 @@ def main():
     else:
         swapper.source_face = None
 
-    # --- 1. Detection only ---
-    print("\n[1/3] Benchmarking face detection (buffalo_l)...")
-    det_times, n_faces = benchmark_detection(swapper, frame, n)
-    report(f"Face Detection ({n_faces} face(s), {w}x{h})", det_times)
+    # --- 1. Detection — full buffalo_l ---
+    print("\n[1/4] Benchmarking detection — full buffalo_l (640x640)...")
+    det_full_times, n_faces = benchmark_detection_full(swapper, frame, n)
+    report(f"Detection FULL ({n_faces} face(s), {w}x{h})", det_full_times)
 
-    # --- 2. Detection + Swap ---
+    # --- 2. Detection — swap path (detection-only, 320x320) ---
+    print("\n[2/4] Benchmarking detection — swap path (det-only, 320x320)...")
+    det_swap_times, n_faces_swap = benchmark_detection_swap(swapper, frame, n)
+    report(
+        f"Detection SWAP-PATH ({n_faces_swap} face(s), {w}x{h}, det 320x320)",
+        det_swap_times,
+    )
+
+    # --- 3. Optimised Swap ---
     if swapper.source_face is not None:
-        print("\n[2/3] Benchmarking face swap (detection + inswapper)...")
+        print("\n[3/4] Benchmarking swap (det-only 320 + inswapper + CUDA graph)...")
         swap_times = benchmark_swap(swapper, frame, swapper.source_face, n)
-        report(f"Face Swap ({n_faces} face(s), {w}x{h})", swap_times)
+        report(f"Swap OPTIMISED ({n_faces_swap} face(s), {w}x{h})", swap_times)
     else:
-        print("\n[2/3] SKIPPED: no source face")
+        print("\n[3/4] SKIPPED: no source face")
         swap_times = None
 
-    # --- 3. Full pipeline with GFPGAN ---
+    # --- 4. Full pipeline with GFPGAN ---
     if not args.skip_enhance and swapper.source_face is not None:
-        print("\n[3/3] Benchmarking full pipeline (swap + GFPGAN)...")
+        print("\n[4/4] Benchmarking full pipeline (swap + GFPGAN)...")
         try:
             enh_times = benchmark_enhanced(swapper, frame, swapper.source_face, n)
             report(f"Full Pipeline w/ GFPGAN ({n_faces} face(s), {w}x{h})", enh_times)
         except Exception as e:
-            print(f"\n[3/3] GFPGAN benchmark failed: {e}")
+            print(f"\n[4/4] GFPGAN benchmark failed: {e}")
             enh_times = None
     else:
-        print("\n[3/3] SKIPPED")
+        print("\n[4/4] SKIPPED")
         enh_times = None
 
     # Summary
-    print(f"\n{'=' * 55}")
+    print(f"\n{'=' * 60}")
     print("  SUMMARY")
-    print(f"{'=' * 55}")
-    print(f"  Detection:  {1 / det_times.mean():.1f} FPS  ({det_times.mean() * 1000:.1f} ms)")
+    print(f"{'=' * 60}")
+    print(f"  Det (full):      {1 / det_full_times.mean():.1f} FPS  ({det_full_times.mean() * 1000:.1f} ms)")
+    print(f"  Det (swap-path): {1 / det_swap_times.mean():.1f} FPS  ({det_swap_times.mean() * 1000:.1f} ms)")
     if swap_times is not None:
-        print(f"  Swap:       {1 / swap_times.mean():.1f} FPS  ({swap_times.mean() * 1000:.1f} ms)")
+        print(f"  Swap (optimised):{1 / swap_times.mean():.1f} FPS  ({swap_times.mean() * 1000:.1f} ms)")
     if enh_times is not None:
-        print(f"  Enhanced:   {1 / enh_times.mean():.1f} FPS  ({enh_times.mean() * 1000:.1f} ms)")
+        print(f"  Enhanced:        {1 / enh_times.mean():.1f} FPS  ({enh_times.mean() * 1000:.1f} ms)")
     print()
 
 
