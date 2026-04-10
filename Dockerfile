@@ -78,7 +78,8 @@ print(f'inswapper downloaded to {path}') \
 ENV HF_TOKEN=""
 
 # ── nginx + start script ─────────────────────────────────────────────
-COPY nginx.conf /etc/nginx/sites-available/default
+# Replace the base image's nginx.conf entirely (it has its own server blocks that conflict).
+COPY nginx.conf /etc/nginx/nginx.conf
 COPY start.sh /opt/start.sh
 RUN chmod +x /opt/start.sh
 
