@@ -168,11 +168,13 @@ def main():
     print(f"Frames per test: {n}")
     print()
 
-    # Load model
-    print("Loading FaceSwapper (CUDA)...")
+    # Load model — auto-detect CUDA
+    import torch
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Loading FaceSwapper ({device.upper()})...")
     t0 = time.perf_counter()
     from core.face_swap import FaceSwapper
-    swapper = FaceSwapper(device="cuda")
+    swapper = FaceSwapper(device=device)
     print(f"Model loaded in {time.perf_counter() - t0:.1f}s")
 
     # Load frame
