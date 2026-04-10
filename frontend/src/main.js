@@ -114,6 +114,26 @@ const resetHud = () => {
   hudTotalEl.textContent = "total: — ms";
 };
 
+const applyFaceOverrideUI = (active, setBy, imageData) => {
+  if (active) {
+    faceStatusEl.textContent = `Override active (by ${setBy})`;
+    faceStatusEl.className = "face-status success";
+    clearFaceBtn.disabled = false;
+    if (imageData) {
+      facePreview.src = imageData;
+      facePreview.style.display = "";
+      faceUploadPrompt.style.display = "none";
+    }
+  } else {
+    faceStatusEl.textContent = "";
+    faceStatusEl.className = "face-status";
+    clearFaceBtn.disabled = true;
+    facePreview.style.display = "none";
+    facePreview.src = "";
+    faceUploadPrompt.style.display = "";
+  }
+};
+
 const resetRoomUI = () => {
   roomPanel.style.display = "none";
   roomStatusEl.textContent = "Waiting for players…";
@@ -124,6 +144,7 @@ const resetRoomUI = () => {
   shuffleAssignments = null;
   shuffleBtn.disabled = true;
   shuffleStatusEl.textContent = "";
+  applyFaceOverrideUI(false);
 };
 
 const updateShuffleBtnState = () => {
@@ -377,6 +398,10 @@ const updateRoomUI = (state) => {
   remoteVideoTitle.textContent =
     count > 0 ? `Grid view — ${count} feed${count !== 1 ? "s" : ""}` : "Grid view (processed)";
 
+  if (state.face_override_active) {
+    applyFaceOverrideUI(true, state.face_override_by, state.face_override_image || null);
+  }
+
   participantsEl.innerHTML = state.peers
     .map((p) => {
       const isMe = p.peer_id === myPeerId;
@@ -436,11 +461,6 @@ faceUploadZone.addEventListener("drop", (e) => {
 
 clearFaceBtn.addEventListener("click", () => {
   sendWs({ type: "clear_source_face" });
-  facePreview.style.display = "none";
-  facePreview.src = "";
-  faceUploadPrompt.style.display = "";
-  clearFaceBtn.disabled = true;
-  faceStatusEl.textContent = "";
 });
 
 enhanceToggle.addEventListener("change", () => {
@@ -545,10 +565,10 @@ const connectWs = (wsUrl) => {
       applyRunnerInfo(msg);
       log(`Runner ${msg.runner_id} reports ${(msg.models || []).join(", ")}`);
     } else if (msg.type === "source_face_set") {
-      if (msg.success) {
-        clearFaceBtn.disabled = false;
-        faceStatusEl.textContent = msg.message || "Source face set";
-        faceStatusEl.className = "face-status success";
+      if (msg.success && msg.set_by) {
+        applyFaceOverrideUI(true, msg.set_by, msg.image_data || null);
+      } else if (msg.success && !msg.set_by) {
+        applyFaceOverrideUI(false);
       } else {
         faceStatusEl.textContent = msg.message || "Failed";
         faceStatusEl.className = "face-status error";

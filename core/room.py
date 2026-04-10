@@ -187,6 +187,9 @@ class Room:
         self._shuffle_mapping: dict[str, Any] = {}
         self._shuffle_labels: dict[str, str] = {}
 
+        self._face_override_by: str | None = None
+        self._face_override_image: str | None = None
+
     # ---- peer management ------------------------------------------------
 
     def add_peer(
@@ -232,7 +235,7 @@ class Room:
     # ---- state & broadcasting -------------------------------------------
 
     def get_state_dict(self) -> dict:
-        return {
+        d: dict[str, Any] = {
             "type": "room_state",
             "peers": [
                 {
@@ -247,7 +250,12 @@ class Room:
                     if pid in self.peers
                 )
             ],
+            "face_override_active": self._face_override_by is not None,
+            "face_override_by": self._face_override_by,
         }
+        if self._face_override_image is not None:
+            d["face_override_image"] = self._face_override_image
+        return d
 
     def _enqueue_to_all(self, msg: Any) -> None:
         for peer in self.peers.values():

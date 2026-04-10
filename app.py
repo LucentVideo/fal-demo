@@ -181,6 +181,9 @@ class RoomStateOutput(BaseModel):
 
     type: Literal["room_state"]
     peers: list[PeerInfo]
+    face_override_active: bool = False
+    face_override_by: str | None = None
+    face_override_image: str | None = None
 
 
 class SourceFaceSetOutput(BaseModel):
@@ -189,6 +192,8 @@ class SourceFaceSetOutput(BaseModel):
     type: Literal["source_face_set"]
     success: bool
     message: str = ""
+    set_by: str | None = None
+    image_data: str | None = None
 
 
 class FaceCapturedOutput(BaseModel):
@@ -554,20 +559,31 @@ class MultiPerceptionWebRTC(
                 return True
 
             success = self.room.face_swapper.set_source(img)
+            peer = self.room.peers.get(peer_id)
+            username = peer.username if peer else peer_id
+            if success:
+                self.room._face_override_by = username
+                self.room._face_override_image = payload.image_data
             self.room._enqueue_to_all({
                 "type": "source_face_set",
                 "success": success,
                 "message": "Source face set" if success else "No face detected in image",
+                "set_by": username if success else None,
+                "image_data": payload.image_data if success else None,
             })
-            log.info(f"app: set_source_face success={success}")
+            log.info(f"app: set_source_face success={success}, set_by={username}")
             return True
 
         async def handle_clear_source_face(_payload: ClearSourceFaceInput) -> bool:
             self.room.face_swapper.clear_source()
+            self.room._face_override_by = None
+            self.room._face_override_image = None
             self.room._enqueue_to_all({
                 "type": "source_face_set",
                 "success": True,
                 "message": "Source face cleared",
+                "set_by": None,
+                "image_data": None,
             })
             return True
 
@@ -629,6 +645,9 @@ class MultiPerceptionWebRTC(
                     root=RoomStateOutput(
                         type="room_state",
                         peers=peers,
+                        face_override_active=msg.get("face_override_active", False),
+                        face_override_by=msg.get("face_override_by"),
+                        face_override_image=msg.get("face_override_image"),
                     )
                 )
             if msg_type == "timing":
