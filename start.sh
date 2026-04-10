@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-cd /workspace/app
+cd /opt/app
 
 # Start fal backend in background
 echo "Starting fal backend..."

@@ -162,8 +162,8 @@ def create_broadcast_track(subscriber: BroadcastSubscriber):
     return BroadcastTrack()
 
 
-GRID_W = 640
-GRID_H = 480
+GRID_W = 1280
+GRID_H = 720
 
 
 class Room:

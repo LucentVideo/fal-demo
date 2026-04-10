@@ -55,29 +55,23 @@
             <button id="stopBtn" class="leave-btn" disabled>Leave</button>
           </div>
 
-          <div class="video-grid">
-            <div class="video-card">
-              <div class="video-title">You</div>
-              <div class="metric-row debug-metric">
-                <div class="fps" id="localFps">FPS: --</div>
-                <div class="resolution" id="localRes">-- x --</div>
-              </div>
-              <div class="bitrate debug-metric" id="localBitrate">
-                Up: -- Mbps
-              </div>
-              <video id="localVideo" autoplay playsinline muted></video>
+          <div class="video-stage">
+            <div class="video-title" id="remoteVideoTitle">Everyone</div>
+            <div class="metric-row debug-metric">
+              <div class="fps" id="remoteFps">FPS: --</div>
+              <div class="resolution" id="remoteRes">-- x --</div>
             </div>
-            <div class="video-card">
-              <div class="video-title" id="remoteVideoTitle">Everyone</div>
-              <div class="metric-row debug-metric">
-                <div class="fps" id="remoteFps">FPS: --</div>
-                <div class="resolution" id="remoteRes">-- x --</div>
-              </div>
-              <div class="bitrate debug-metric" id="remoteBitrate">
-                Down: -- Mbps
-              </div>
+            <div class="bitrate debug-metric" id="remoteBitrate">
+              Down: -- Mbps
+            </div>
+            <div class="video-wrapper">
               <video id="remoteVideo" autoplay playsinline></video>
+              <video id="localVideo" class="pip-video" autoplay playsinline muted></video>
             </div>
+            <!-- Hidden metrics for local (JS still references these) -->
+            <span id="localFps" hidden></span>
+            <span id="localRes" hidden></span>
+            <span id="localBitrate" hidden></span>
           </div>
 
           <div class="hud debug-metric" id="hud">

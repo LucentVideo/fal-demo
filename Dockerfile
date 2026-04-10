@@ -14,7 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Python deps (skip torch/torchvision — base image has them) ────────
-WORKDIR /workspace/app
+# Use /opt/app, not /workspace: RunPod mounts /workspace over the image and hides baked files.
+WORKDIR /opt/app
 
 # Install Python deps first for layer caching.
 # Base image may ship distro cryptography without a pip RECORD; overlay a wheel first.
@@ -74,9 +75,9 @@ ENV HF_TOKEN=""
 
 # ── nginx + start script ─────────────────────────────────────────────
 COPY nginx.conf /etc/nginx/sites-available/default
-COPY start.sh /workspace/start.sh
-RUN chmod +x /workspace/start.sh
+COPY start.sh /opt/start.sh
+RUN chmod +x /opt/start.sh
 
 EXPOSE 8888
 
-CMD ["/workspace/start.sh"]
+CMD ["/opt/start.sh"]

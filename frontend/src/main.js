@@ -249,9 +249,28 @@ const ensurePeer = async (iceServers) => {
 
 const attachLocalStream = async () => {
   if (localStream) return;
-  localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+  localStream = await navigator.mediaDevices.getUserMedia({
+    video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+    audio: false,
+  });
   localVideo.srcObject = localStream;
   localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+
+  // Request higher bitrate from the WebRTC encoder
+  try {
+    const senders = pc.getSenders().filter((s) => s.track?.kind === "video");
+    for (const sender of senders) {
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      params.encodings[0].maxBitrate = 2_500_000; // 2.5 Mbps
+      await sender.setParameters(params);
+    }
+  } catch (e) {
+    console.warn("Could not set sender bitrate:", e);
+  }
+
   if (localFpsStop) {
     localFpsStop();
   }
