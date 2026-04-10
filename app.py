@@ -335,12 +335,15 @@ class MultiPerceptionWebRTC(
             "yolov8n",
             "insightface-buffalo_l", "inswapper_128_fp16",
         ]
+        # Minted TURN credentials last TURN_EXPIRY_SECONDS; refresh cache before then.
+        self._metered_ice_cache: list[dict] | None = None
+        self._metered_ice_expires: float = 0.0
 
     # ------------------------------------------------------------------
     # Metered TURN bootstrap — copied verbatim from upstream yolo.py.
     # ------------------------------------------------------------------
 
-    def _build_ice_servers(self) -> list[dict]:
+    def _fetch_metered_ice_servers_sync(self) -> list[dict]:
         import json
         import urllib.parse
         import urllib.request
@@ -398,7 +401,7 @@ class MultiPerceptionWebRTC(
         servers = fetch_ice_servers(temporary_api_key)
         if not servers:
             raise RuntimeError("Metered returned empty ICE server list.")
-        print("WebRTC: using Metered secret-minted ICE servers")
+        print("WebRTC: minted fresh Metered ICE servers")
         return servers
 
     # ------------------------------------------------------------------
@@ -424,12 +427,27 @@ class MultiPerceptionWebRTC(
 
         from core.room import create_broadcast_track
 
+        import time
+
         peer_id = str(uuid.uuid4())[:8]
         peer_registered = False
         subscriber_ref: dict[str, object] = {"sub": None}
         incoming_video_ref: dict[str, object] = {"track": None}
 
-        signal_ice_servers = self._build_ice_servers()
+        now = time.time()
+        cache_ttl = min(480.0, float(self.TURN_EXPIRY_SECONDS) - 60.0)
+        if (
+            self._metered_ice_cache is not None
+            and now < self._metered_ice_expires
+        ):
+            signal_ice_servers = self._metered_ice_cache
+            print("WebRTC: using cached Metered ICE servers")
+        else:
+            signal_ice_servers = await asyncio.to_thread(
+                self._fetch_metered_ice_servers_sync
+            )
+            self._metered_ice_cache = signal_ice_servers
+            self._metered_ice_expires = now + cache_ttl
         rtc_ice_servers = [
             RTCIceServer(
                 urls=server["urls"],
