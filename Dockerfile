@@ -1,0 +1,79 @@
+# ── Base: RunPod PyTorch 2.8.0 + CUDA 12.8.1 + Ubuntu 24.04 ──────────
+FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ── System deps ───────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        nginx \
+        libgl1 \
+        libglib2.0-0 \
+        curl \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Python deps (skip torch/torchvision — base image has them) ────────
+WORKDIR /workspace/app
+
+# Install Python deps first for layer caching
+RUN pip install --no-cache-dir \
+        fal \
+        aiortc \
+        av \
+        opencv-python \
+        pydantic>=2.0 \
+        ultralytics \
+        pillow \
+        "numpy<2" \
+        insightface \
+        huggingface_hub \
+        gfpgan \
+        transformers
+
+# onnxruntime-gpu for CUDA 12
+RUN pip install --no-cache-dir onnxruntime-gpu \
+        --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
+
+# ── Copy project ──────────────────────────────────────────────────────
+COPY . .
+
+# ── Build frontend ────────────────────────────────────────────────────
+RUN cd frontend && npm ci && npm run build
+
+# ── Pre-download models at build time ─────────────────────────────────
+ARG HF_TOKEN
+ENV HF_TOKEN=${HF_TOKEN}
+
+# yolov8n — ultralytics auto-downloads on first use, trigger it now
+RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+
+# insightface buffalo_l + inswapper via our own code
+RUN python -c "\
+from insightface.app import FaceAnalysis; \
+fa = FaceAnalysis(name='buffalo_l'); \
+fa.prepare(ctx_id=-1, det_size=(640, 640)); \
+print('buffalo_l downloaded') \
+"
+RUN python -c "\
+from huggingface_hub import hf_hub_download; \
+import os; \
+path = hf_hub_download( \
+    repo_id='hacksider/deep-live-cam', \
+    filename='inswapper_128_fp16.onnx', \
+    token=os.environ.get('HF_TOKEN'), \
+); \
+print(f'inswapper downloaded to {path}') \
+"
+
+# Clear the build arg so it doesn't leak into the runtime image
+ENV HF_TOKEN=""
+
+# ── nginx + start script ─────────────────────────────────────────────
+COPY nginx.conf /etc/nginx/sites-available/default
+COPY start.sh /workspace/start.sh
+RUN chmod +x /workspace/start.sh
+
+EXPOSE 8888
+
+CMD ["/workspace/start.sh"]

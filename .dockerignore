@@ -1,0 +1,10 @@
+.venv/
+.git/
+__pycache__/
+*.pyc
+node_modules/
+upstream-fal-demos/
+notes/
+.env
+.env.example
+uv.lock

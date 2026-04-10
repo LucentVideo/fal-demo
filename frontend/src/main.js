@@ -3,7 +3,12 @@ import { decode, encode } from "@msgpack/msgpack";
 const TOKEN_EXPIRATION_SECONDS = 120;
 const DEFAULT_ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
 
-const ENV_BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "ws://localhost:8080";
+// Auto-detect WebSocket URL from page location (works on RunPod proxy)
+const _autoWsUrl = () => {
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${window.location.host}`;
+};
+const ENV_BACKEND_URL = import.meta.env.VITE_BACKEND_URL || _autoWsUrl();
 const ENV_LOCAL_MODE = import.meta.env.VITE_LOCAL_MODE === "true";
 
 const localModeCheckbox = document.getElementById("localMode");
