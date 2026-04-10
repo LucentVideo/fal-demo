@@ -76,23 +76,23 @@ class FaceSwapper:
         self.source_face = None
         log.info("source face cleared")
 
+    def swap_with_source(self, frame_bgr: np.ndarray, source_face: Any) -> np.ndarray:
+        """Swap all detected faces in frame to the given source face identity."""
+        faces = self.face_app.get(frame_bgr)
+        if not faces:
+            return frame_bgr
+        result = frame_bgr.copy()
+        for face in faces:
+            result = self.swapper.get(result, face, source_face, paste_back=True)
+        if self.enhance_enabled:
+            result = self._enhance(result)
+        return result
+
     def __call__(self, frame_bgr: np.ndarray) -> np.ndarray:
         """Detect all faces in frame, swap each with the source identity."""
         if self.source_face is None:
             return frame_bgr
-
-        faces = self.face_app.get(frame_bgr)
-        if not faces:
-            return frame_bgr
-
-        result = frame_bgr.copy()
-        for face in faces:
-            result = self.swapper.get(result, face, self.source_face, paste_back=True)
-
-        if self.enhance_enabled:
-            result = self._enhance(result)
-
-        return result
+        return self.swap_with_source(frame_bgr, self.source_face)
 
     def _ensure_enhancer(self) -> None:
         if self._enhancer is not None:

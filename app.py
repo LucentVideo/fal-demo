@@ -100,6 +100,12 @@ class ToggleEnhanceInput(BaseModel):
     enabled: bool
 
 
+class ShuffleFacesInput(BaseModel):
+    """Client requests a random face shuffle among all captured peers."""
+
+    type: Literal["shuffle_faces"]
+
+
 RealtimeInputMessage = Annotated[
     OfferInput
     | IceCandidateInput
@@ -107,7 +113,8 @@ RealtimeInputMessage = Annotated[
     | JoinInput
     | SetSourceFaceInput
     | ClearSourceFaceInput
-    | ToggleEnhanceInput,
+    | ToggleEnhanceInput
+    | ShuffleFacesInput,
     Field(discriminator="type"),
 ]
 
@@ -193,6 +200,26 @@ class FaceCapturedOutput(BaseModel):
     success: bool
 
 
+class ShuffleAssignment(BaseModel):
+    peer_id: str
+    username: str
+    assigned_face_of: str
+
+
+class ShuffleAppliedOutput(BaseModel):
+    """Broadcast when a face shuffle is applied."""
+
+    type: Literal["shuffle_applied"]
+    assignments: list[ShuffleAssignment]
+
+
+class ShuffleClearedOutput(BaseModel):
+    """Broadcast when the face shuffle is cleared."""
+
+    type: Literal["shuffle_cleared"]
+    reason: str = ""
+
+
 RealtimeOutputMessage = Annotated[
     IceServersOutput
     | AnswerOutput
@@ -203,7 +230,9 @@ RealtimeOutputMessage = Annotated[
     | JoinedOutput
     | RoomStateOutput
     | SourceFaceSetOutput
-    | FaceCapturedOutput,
+    | FaceCapturedOutput
+    | ShuffleAppliedOutput
+    | ShuffleClearedOutput,
     Field(discriminator="type"),
 ]
 
@@ -547,6 +576,10 @@ class MultiPerceptionWebRTC(
             log.info(f"app: enhance_enabled={payload.enabled}")
             return True
 
+        async def handle_shuffle_faces(_payload: ShuffleFacesInput) -> bool:
+            self.room.shuffle()
+            return True
+
         async def handle_payload(payload: RealtimeInputMessage) -> bool:
             if isinstance(payload, OfferInput):
                 return await handle_offer(payload)
@@ -562,6 +595,8 @@ class MultiPerceptionWebRTC(
                 return await handle_clear_source_face(payload)
             if isinstance(payload, ToggleEnhanceInput):
                 return await handle_toggle_enhance(payload)
+            if isinstance(payload, ShuffleFacesInput):
+                return await handle_shuffle_faces(payload)
             return True
 
         async def input_loop() -> None:
@@ -602,6 +637,13 @@ class MultiPerceptionWebRTC(
                 return RealtimeOutput(root=SourceFaceSetOutput(**msg))
             if msg_type == "face_captured":
                 return RealtimeOutput(root=FaceCapturedOutput(**msg))
+            if msg_type == "shuffle_applied":
+                assignments = [ShuffleAssignment(**a) for a in msg.get("assignments", [])]
+                return RealtimeOutput(
+                    root=ShuffleAppliedOutput(type="shuffle_applied", assignments=assignments)
+                )
+            if msg_type == "shuffle_cleared":
+                return RealtimeOutput(root=ShuffleClearedOutput(**msg))
             return None
 
         input_task: asyncio.Task | None = None

@@ -11,8 +11,11 @@ BroadcastTrack whose ``recv()`` returns the latest published frame.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import math
+import random
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
@@ -179,6 +182,10 @@ class Room:
         self._stopped = False
         self._frame_count = 0
         self._timing_every_n = 5
+        self._executor = ThreadPoolExecutor(max_workers=2)
+
+        self._shuffle_mapping: dict[str, Any] = {}
+        self._shuffle_labels: dict[str, str] = {}
 
     # ---- peer management ------------------------------------------------
 
@@ -202,6 +209,8 @@ class Room:
             peer.reference_face = None
         with suppress(ValueError):
             self._peer_order.remove(peer_id)
+        if peer_id in self._shuffle_mapping and self._shuffle_mapping:
+            self.clear_shuffle(reason="a player left the room")
         log.info(f"remove_peer {peer_id}, remaining={list(self.peers.keys())}")
         if not self.peers:
             self._stop_processing()
@@ -281,6 +290,60 @@ class Room:
             if peer.face_captured and peer.reference_face is not None
         }
 
+    # ---- shuffle ---------------------------------------------------------
+
+    def shuffle(self) -> bool:
+        """Generate a random derangement of captured faces across peers.
+
+        Uses Sattolo's algorithm to guarantee no peer gets their own face.
+        Returns True if shuffle was applied, False if not enough faces.
+        """
+        face_map = self.get_face_map()
+        if len(face_map) < 2:
+            self._enqueue_to_all({
+                "type": "shuffle_cleared",
+                "reason": "Need at least 2 captured faces to shuffle",
+            })
+            return False
+
+        pids = list(face_map.keys())
+        n = len(pids)
+        shuffled = pids[:]
+        for i in range(n - 1, 0, -1):
+            j = random.randint(0, i - 1)
+            shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+
+        self._shuffle_mapping = {
+            pids[k]: face_map[shuffled[k]] for k in range(n)
+        }
+        self._shuffle_labels = {
+            pids[k]: self.peers[shuffled[k]].username for k in range(n)
+        }
+
+        assignments = [
+            {
+                "peer_id": pids[k],
+                "username": self.peers[pids[k]].username,
+                "assigned_face_of": self.peers[shuffled[k]].username,
+            }
+            for k in range(n)
+        ]
+        self._enqueue_to_all({
+            "type": "shuffle_applied",
+            "assignments": assignments,
+        })
+        log.info(f"shuffle applied: {self._shuffle_labels}")
+        return True
+
+    def clear_shuffle(self, reason: str = "shuffle cleared") -> None:
+        self._shuffle_mapping.clear()
+        self._shuffle_labels.clear()
+        self._enqueue_to_all({
+            "type": "shuffle_cleared",
+            "reason": reason,
+        })
+        log.info(f"shuffle cleared: {reason}")
+
     # ---- processing loop ------------------------------------------------
 
     def _ensure_processing(self) -> None:
@@ -298,6 +361,8 @@ class Room:
         if self._processing_task is not None:
             self._processing_task.cancel()
             self._processing_task = None
+        self._executor.shutdown(wait=False)
+        self._executor = ThreadPoolExecutor(max_workers=2)
 
     async def _processing_loop(self) -> None:
         import time as _time
@@ -336,11 +401,6 @@ class Room:
                 await asyncio.sleep(0.1)
                 continue
 
-            # Yield so relay drain tasks can run — critical on CPU/MPS
-            # where the model inference below blocks the event loop and
-            # would otherwise starve the relays.
-            await asyncio.sleep(0)
-
             # Grab the latest frame from each peer's relay — instant, no
             # waiting, no buffer accumulation.  If a relay hasn't received
             # its first frame yet we get None and skip that peer below.
@@ -366,6 +426,8 @@ class Room:
                 and self.face_swapper.source_face is not None
             )
 
+            loop = asyncio.get_running_loop()
+
             for i, (pid, peer) in enumerate(peers_with_tracks):
                 if raw_frames[i] is None:
                     continue
@@ -374,16 +436,32 @@ class Room:
 
                 if not peer.face_captured and self.face_swapper is not None:
                     try:
-                        self._try_capture_face(peer, img)
+                        await loop.run_in_executor(
+                            self._executor,
+                            self._try_capture_face, peer, img,
+                        )
                     except Exception:
                         pass
 
                 try:
                     s = _time.perf_counter()
                     if use_face_swap:
-                        annotated = self.face_swapper(img)
+                        annotated = await loop.run_in_executor(
+                            self._executor,
+                            self.face_swapper, img,
+                        )
+                    elif pid in self._shuffle_mapping:
+                        annotated = await loop.run_in_executor(
+                            self._executor,
+                            functools.partial(
+                                self.face_swapper.swap_with_source,
+                                img, self._shuffle_mapping[pid],
+                            ),
+                        )
                     else:
-                        yolo_out = self._yolo(img)
+                        yolo_out = await loop.run_in_executor(
+                            self._executor, self._yolo, img,
+                        )
                         annotated = compose_frame(
                             img, layer="detection", yolo=yolo_out,
                         )
@@ -416,7 +494,12 @@ class Room:
             out_pts += 1
             await self.broadcaster.publish(new_frame)
 
-            mode_label = "face_swap" if use_face_swap else "yolo"
+            if use_face_swap:
+                mode_label = "face_swap"
+            elif self._shuffle_mapping:
+                mode_label = "shuffle"
+            else:
+                mode_label = "yolo"
             self._frame_count += 1
             if self._frame_count % 30 == 1:
                 log.info(
@@ -430,7 +513,7 @@ class Room:
                     {
                         "type": "timing",
                         "layer": mode_label,
-                        "yolo_ms": model_ms_total if not use_face_swap else None,
+                        "yolo_ms": model_ms_total if mode_label == "yolo" else None,
                         "total_ms": total_ms,
                     }
                 )

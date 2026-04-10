@@ -40,6 +40,8 @@ const faceStatusEl = document.getElementById("faceStatus");
 const roomPanel = document.getElementById("roomPanel");
 const roomStatusEl = document.getElementById("roomStatus");
 const participantsEl = document.getElementById("participants");
+const shuffleBtn = document.getElementById("shuffleBtn");
+const shuffleStatusEl = document.getElementById("shuffleStatus");
 
 let ws = null;
 let pc = null;
@@ -53,6 +55,7 @@ let activeLayer = "detection";
 
 let myPeerId = null;
 let roomState = null;
+let shuffleAssignments = null;
 
 const isLocalMode = () => localModeCheckbox.checked;
 
@@ -118,6 +121,18 @@ const resetRoomUI = () => {
   remoteVideoTitle.textContent = "Grid view (processed)";
   myPeerId = null;
   roomState = null;
+  shuffleAssignments = null;
+  shuffleBtn.disabled = true;
+  shuffleStatusEl.textContent = "";
+};
+
+const updateShuffleBtnState = () => {
+  if (!roomState) {
+    shuffleBtn.disabled = true;
+    return;
+  }
+  const capturedCount = roomState.peers.filter((p) => p.face_captured).length;
+  shuffleBtn.disabled = capturedCount < 2;
 };
 
 const stop = () => {
@@ -371,9 +386,18 @@ const updateRoomUI = (state) => {
       const faceIcon = p.face_captured
         ? '<span class="face-captured-icon" title="Face captured">&#9786;</span>'
         : '<span class="face-pending-icon" title="Detecting face…">&#9676;</span>';
-      return `<div class="${classes}">${videoDot}${faceIcon}<span class="participant-name">${label}</span></div>`;
+      let assignmentTag = "";
+      if (shuffleAssignments) {
+        const assignment = shuffleAssignments.find((a) => a.peer_id === p.peer_id);
+        if (assignment) {
+          assignmentTag = `<span class="face-assignment">${assignment.assigned_face_of}'s face</span>`;
+        }
+      }
+      return `<div class="${classes}">${videoDot}${faceIcon}<span class="participant-name">${label}</span>${assignmentTag}</div>`;
     })
     .join("");
+
+  updateShuffleBtnState();
 };
 
 // ---- Face swap controls ----
@@ -421,6 +445,11 @@ clearFaceBtn.addEventListener("click", () => {
 
 enhanceToggle.addEventListener("change", () => {
   sendWs({ type: "toggle_enhance", enabled: enhanceToggle.checked });
+});
+
+shuffleBtn.addEventListener("click", () => {
+  sendWs({ type: "shuffle_faces" });
+  shuffleStatusEl.textContent = "Shuffling…";
 });
 
 // ---- Layer toggles ----
@@ -533,7 +562,22 @@ const connectWs = (wsUrl) => {
           updateRoomUI(roomState);
         }
       }
+      updateShuffleBtnState();
       log(`Face captured: ${msg.username} (${msg.peer_id})`);
+    } else if (msg.type === "shuffle_applied") {
+      shuffleAssignments = msg.assignments || [];
+      shuffleStatusEl.textContent = "Faces shuffled!";
+      if (roomState) updateRoomUI(roomState);
+      const myAssignment = shuffleAssignments.find((a) => a.peer_id === myPeerId);
+      if (myAssignment) {
+        log(`Shuffle: you got ${myAssignment.assigned_face_of}'s face`);
+      }
+      log(`Shuffle applied (${shuffleAssignments.length} peers)`);
+    } else if (msg.type === "shuffle_cleared") {
+      shuffleAssignments = null;
+      shuffleStatusEl.textContent = msg.reason || "";
+      if (roomState) updateRoomUI(roomState);
+      log(`Shuffle cleared: ${msg.reason || ""}`);
     } else if (msg.type === "timing") {
       applyTimingMessage(msg);
     } else if (msg.type === "answer" && msg.sdp && pc) {

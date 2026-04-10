@@ -208,6 +208,25 @@ button:not(:disabled):hover {
   50% { opacity: 1; }
 }
 
+.shuffle-row {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.shuffle-status {
+  font-size: 12px;
+  color: #9aa3b7;
+}
+
+.face-assignment {
+  font-size: 11px;
+  color: #f4c45b;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
 /* ---- Face swap panel ---- */
 
 .face-swap-panel {
