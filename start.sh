@@ -18,7 +18,10 @@ for i in $(seq 1 60); do
     sleep 1
 done
 
-# Start nginx in foreground
+# Kill any nginx the base-image entrypoint may have started
+nginx -s stop 2>/dev/null || true
+sleep 0.5
+
 echo "Starting nginx on port 8888..."
 nginx -g "daemon off;" &
 NGINX_PID=$!
