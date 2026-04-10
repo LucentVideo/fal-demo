@@ -250,7 +250,7 @@ const ensurePeer = async (iceServers) => {
 const attachLocalStream = async () => {
   if (localStream) return;
   localStream = await navigator.mediaDevices.getUserMedia({
-    video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+    video: { width: { ideal: 1920 }, height: { ideal: 1080 } },
     audio: false,
   });
   localVideo.srcObject = localStream;

@@ -416,6 +416,7 @@ class MultiPerceptionWebRTC(
             RTCConfiguration,
             RTCIceServer,
             RTCPeerConnection,
+            RTCRtpCodecCapability,
             RTCSessionDescription,
         )
         from aiortc.contrib.media import MediaBlackhole
@@ -488,7 +489,16 @@ class MultiPerceptionWebRTC(
                     self.room.set_peer_track(peer_id, track)
                 sub = self.room.broadcaster.subscribe()
                 subscriber_ref["sub"] = sub
-                pc.addTrack(create_broadcast_track(sub))
+                broadcast_track = create_broadcast_track(sub)
+                transceiver = pc.addTrack(broadcast_track)
+                # Prefer H264 for higher quality ceiling (3 Mbps vs VP8's 1.5 Mbps)
+                try:
+                    h264_codec = RTCRtpCodecCapability(
+                        mimeType="video/H264", clockRate=90000
+                    )
+                    transceiver.setCodecPreferences([h264_codec])
+                except Exception as e:
+                    log.warning(f"Could not set H264 preference: {e}")
                 log.info(f"app: on_track peer={peer_id} — subscribed to broadcaster, broadcast_track added to PC")
             else:
                 asyncio.ensure_future(blackhole.consume(track))
