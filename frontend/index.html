@@ -1,122 +1,159 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Face Swap Arena — Multiplayer WebRTC</title>
+    <title>Face Swap Arena</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <div id="app">
       <header>
         <h1>Face Swap Arena</h1>
-        <p>
-          Real-time face swap on a single warm fal runner.
-          Faces are auto-detected from webcams; upload one to override.
-        </p>
+        <div class="subtitle-row">
+          <p>Look ridiculous together in real time</p>
+          <a class="github-link" href="https://github.com/LucentVideo/fal-demo" target="_blank" rel="noopener noreferrer">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          </a>
+        </div>
       </header>
 
-      <section class="panel">
-        <div class="field">
-          <label class="toggle-label">
-            <input id="localMode" type="checkbox" checked />
-            Local mode
-          </label>
-        </div>
-        <div class="field" id="backendUrlField">
-          <label for="backendUrl">Backend URL</label>
-          <input id="backendUrl" type="text" value="ws://localhost:8080" />
-        </div>
-        <div class="field" id="appIdField" style="display:none">
-          <label for="appId">Endpoint</label>
-          <input id="appId" type="text" value="myuser/multi-perception-webrtc" />
-        </div>
-        <div class="field">
-          <label for="username">Your Name</label>
-          <input id="username" type="text" placeholder="Enter a display name" />
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="buttons">
-          <button id="startBtn">Join</button>
-          <button id="stopBtn" disabled>Leave</button>
-        </div>
-        <div class="status" id="status">Disconnected</div>
-      </section>
-
-      <section class="panel room-panel" id="roomPanel" style="display:none">
-        <div class="room-header">
-          <h2>Room</h2>
-          <div class="room-status" id="roomStatus">Waiting for players…</div>
-        </div>
-        <div class="participants" id="participants"></div>
-        <div class="shuffle-row">
-          <button id="shuffleBtn" disabled>Shuffle Faces</button>
-          <span class="shuffle-status" id="shuffleStatus"></span>
-        </div>
-      </section>
-
-      <section class="panel face-swap-panel" id="faceSwapPanel">
-        <h2>Face Override (optional)</h2>
-        <div class="face-upload-row">
-          <div class="face-upload-zone" id="faceUploadZone">
-            <input type="file" id="faceFileInput" accept="image/*" hidden />
-            <img id="facePreview" class="face-preview" style="display:none" />
-            <div id="faceUploadPrompt" class="face-upload-prompt">Upload a face to override auto-detection</div>
-          </div>
-          <div class="face-controls">
-            <button id="clearFaceBtn" disabled>Clear Face</button>
-            <label class="toggle-label">
-              <input type="checkbox" id="enhanceToggle" />
-              GFPGAN Enhance
-            </label>
-          </div>
-        </div>
-        <div class="face-status" id="faceStatus"></div>
-      </section>
-
-      <section class="panel">
-        <h2>Video Feeds</h2>
-
-        <div class="layer-toggles" id="layerToggles">
-          <button class="layer-btn active" data-layer="detection">Detection (YOLO)</button>
-        </div>
-
-        <div class="video-grid">
-          <div class="video-card">
-            <div class="video-title">Your Webcam (raw)</div>
-            <div class="metric-row">
-              <div class="fps" id="localFps">FPS: --</div>
-              <div class="resolution" id="localRes">-- x --</div>
+      <!-- Main arena box -->
+      <section class="arena-box" id="arenaBox">
+        <!-- Join overlay -->
+        <div class="join-overlay" id="joinOverlay">
+          <input id="localMode" type="hidden" />
+          <input id="backendUrl" type="hidden" />
+          <input
+            id="appId"
+            type="hidden"
+            value="myuser/multi-perception-webrtc"
+          />
+          <div class="join-content">
+            <div class="field">
+              <label for="username">What should we call you?</label>
+              <input
+                id="username"
+                type="text"
+                placeholder="Your name..."
+                autocomplete="off"
+              />
             </div>
-            <div class="bitrate" id="localBitrate">Up: -- Mbps</div>
-            <video id="localVideo" autoplay playsinline muted></video>
-          </div>
-          <div class="video-card">
-            <div class="video-title" id="remoteVideoTitle">Grid view (processed)</div>
-            <div class="metric-row">
-              <div class="fps" id="remoteFps">FPS: --</div>
-              <div class="resolution" id="remoteRes">-- x --</div>
-            </div>
-            <div class="bitrate" id="remoteBitrate">Down: -- Mbps</div>
-            <video id="remoteVideo" autoplay playsinline></video>
+            <button id="startBtn">Join</button>
+            <div class="status" id="status"></div>
           </div>
         </div>
 
-        <div class="hud" id="hud">
-          <span class="hud-chip" id="hudRunner">runner: —</span>
-          <span class="hud-chip" id="hudModels">models: —</span>
-          <span class="hud-chip" id="hudMode">mode: —</span>
-          <span class="hud-chip strong" id="hudTotal">total: — ms</span>
+        <!-- Arena content (visible after join) -->
+        <div class="arena-content" id="arenaContent">
+          <div class="arena-top-bar">
+            <div class="layer-toggles" id="layerToggles">
+              <button class="layer-btn active" data-layer="detection">
+                Detection (YOLO)
+              </button>
+            </div>
+            <button id="stopBtn" class="leave-btn" disabled>Leave</button>
+          </div>
+
+          <div class="video-grid">
+            <div class="video-card">
+              <div class="video-title">You</div>
+              <div class="metric-row debug-metric">
+                <div class="fps" id="localFps">FPS: --</div>
+                <div class="resolution" id="localRes">-- x --</div>
+              </div>
+              <div class="bitrate debug-metric" id="localBitrate">
+                Up: -- Mbps
+              </div>
+              <video id="localVideo" autoplay playsinline muted></video>
+            </div>
+            <div class="video-card">
+              <div class="video-title" id="remoteVideoTitle">Everyone</div>
+              <div class="metric-row debug-metric">
+                <div class="fps" id="remoteFps">FPS: --</div>
+                <div class="resolution" id="remoteRes">-- x --</div>
+              </div>
+              <div class="bitrate debug-metric" id="remoteBitrate">
+                Down: -- Mbps
+              </div>
+              <video id="remoteVideo" autoplay playsinline></video>
+            </div>
+          </div>
+
+          <div class="hud debug-metric" id="hud">
+            <span class="hud-chip" id="hudRunner">runner: —</span>
+            <span class="hud-chip" id="hudModels">models: —</span>
+            <span class="hud-chip" id="hudMode">mode: —</span>
+            <span class="hud-chip strong" id="hudTotal">total: — ms</span>
+          </div>
+
+          <!-- Players + Shuffle -->
+          <div class="room-section" id="roomPanel" style="display: none">
+            <div class="room-header">
+              <h2>Who's here</h2>
+              <div class="room-status" id="roomStatus">
+                Waiting for friends&hellip;
+              </div>
+            </div>
+            <div class="participants" id="participants"></div>
+            <div class="shuffle-row">
+              <button id="shuffleBtn" disabled>Shuffle Faces</button>
+              <span class="shuffle-status" id="shuffleStatus"></span>
+            </div>
+          </div>
+
+          <!-- Face Upload -->
+          <div class="face-section" id="faceSwapPanel">
+            <div class="face-section-header">
+              <h2>Use a different face</h2>
+            </div>
+            <div class="face-upload-row">
+              <div class="face-upload-zone" id="faceUploadZone">
+                <input
+                  type="file"
+                  id="faceFileInput"
+                  accept="image/*"
+                  hidden
+                />
+                <img
+                  id="facePreview"
+                  class="face-preview"
+                  style="display: none"
+                />
+                <div id="faceUploadPrompt" class="face-upload-prompt">
+                  Drop a photo here
+                </div>
+              </div>
+              <div class="face-controls">
+                <button id="clearFaceBtn" disabled>Clear</button>
+                <label class="toggle-label">
+                  <input type="checkbox" id="enhanceToggle" />
+                  Enhance
+                </label>
+              </div>
+            </div>
+            <div class="face-status" id="faceStatus"></div>
+          </div>
         </div>
       </section>
 
-      <section class="panel">
-        <h2>Logs</h2>
-        <div class="log" id="log"></div>
+      <!-- Debug (collapsed) -->
+      <section class="panel debug-section" id="debugSection">
+        <div class="debug-toggle-row" id="debugToggle">
+          <span class="debug-caret">▶</span>
+          <h2>Debug</h2>
+        </div>
+        <div class="debug-content">
+          <div class="log" id="log"></div>
+        </div>
       </section>
     </div>
+
+    <!-- Shuffle flash overlay -->
+    <div class="shuffle-flash" id="shuffleFlash">
+      <div class="shuffle-flash-text">Face Swap!</div>
+    </div>
+
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

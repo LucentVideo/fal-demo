@@ -3,10 +3,11 @@ import { decode, encode } from "@msgpack/msgpack";
 const TOKEN_EXPIRATION_SECONDS = 120;
 const DEFAULT_ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
 
+const ENV_BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "ws://localhost:8080";
+const ENV_LOCAL_MODE = import.meta.env.VITE_LOCAL_MODE === "true";
+
 const localModeCheckbox = document.getElementById("localMode");
 const backendUrlInput = document.getElementById("backendUrl");
-const backendUrlField = document.getElementById("backendUrlField");
-const appIdField = document.getElementById("appIdField");
 const appIdInput = document.getElementById("appId");
 const usernameInput = document.getElementById("username");
 const startBtn = document.getElementById("startBtn");
@@ -42,6 +43,10 @@ const roomStatusEl = document.getElementById("roomStatus");
 const participantsEl = document.getElementById("participants");
 const shuffleBtn = document.getElementById("shuffleBtn");
 const shuffleStatusEl = document.getElementById("shuffleStatus");
+const debugSection = document.getElementById("debugSection");
+const debugToggle = document.getElementById("debugToggle");
+const shuffleFlash = document.getElementById("shuffleFlash");
+const joinOverlay = document.getElementById("joinOverlay");
 
 let ws = null;
 let pc = null;
@@ -57,14 +62,10 @@ let myPeerId = null;
 let roomState = null;
 let shuffleAssignments = null;
 
-const isLocalMode = () => localModeCheckbox.checked;
+localModeCheckbox.value = ENV_LOCAL_MODE ? "true" : "";
+backendUrlInput.value = ENV_BACKEND_URL;
 
-const syncModeFields = () => {
-  backendUrlField.style.display = isLocalMode() ? "" : "none";
-  appIdField.style.display = isLocalMode() ? "none" : "";
-};
-localModeCheckbox.addEventListener("change", syncModeFields);
-syncModeFields();
+const isLocalMode = () => ENV_LOCAL_MODE;
 
 const log = (msg) => {
   console.log(msg);
@@ -136,9 +137,9 @@ const applyFaceOverrideUI = (active, setBy, imageData) => {
 
 const resetRoomUI = () => {
   roomPanel.style.display = "none";
-  roomStatusEl.textContent = "Waiting for players…";
+  roomStatusEl.textContent = "Waiting for friends\u2026";
   participantsEl.innerHTML = "";
-  remoteVideoTitle.textContent = "Grid view (processed)";
+  remoteVideoTitle.textContent = "Everyone";
   myPeerId = null;
   roomState = null;
   shuffleAssignments = null;
@@ -191,7 +192,8 @@ const stop = () => {
   remoteBitrateEl.textContent = "Down: -- Mbps";
   resetHud();
   resetRoomUI();
-  setStatus("Disconnected");
+  setStatus("");
+  joinOverlay.classList.remove("hidden");
 };
 
 const parseIceServers = (iceServersPayload) => {
@@ -394,9 +396,9 @@ const updateRoomUI = (state) => {
   roomPanel.style.display = "";
 
   const count = state.peers.length;
-  roomStatusEl.textContent = `${count} player${count !== 1 ? "s" : ""} connected`;
+  roomStatusEl.textContent = `${count} ${count !== 1 ? "people" : "person"} here`;
   remoteVideoTitle.textContent =
-    count > 0 ? `Grid view — ${count} feed${count !== 1 ? "s" : ""}` : "Grid view (processed)";
+    count > 0 ? `Everyone (${count})` : "Everyone";
 
   if (state.face_override_active) {
     applyFaceOverrideUI(true, state.face_override_by, state.face_override_image || null);
@@ -469,7 +471,7 @@ enhanceToggle.addEventListener("change", () => {
 
 shuffleBtn.addEventListener("click", () => {
   sendWs({ type: "shuffle_faces" });
-  shuffleStatusEl.textContent = "Shuffling…";
+  shuffleStatusEl.textContent = "Shuffling\u2026";
 });
 
 // ---- Layer toggles ----
@@ -530,8 +532,9 @@ const connectWs = (wsUrl) => {
   };
 
   ws.onopen = async () => {
-    setStatus("Connected");
+    setStatus("Connecting\u2026");
     log("WebSocket open.");
+    joinOverlay.classList.add("hidden");
     sendWs({ type: "join", username: getUsername() });
   };
 
@@ -587,6 +590,7 @@ const connectWs = (wsUrl) => {
     } else if (msg.type === "shuffle_applied") {
       shuffleAssignments = msg.assignments || [];
       shuffleStatusEl.textContent = "Faces shuffled!";
+      triggerShuffleFlash();
       if (roomState) updateRoomUI(roomState);
       const myAssignment = shuffleAssignments.find((a) => a.peer_id === myPeerId);
       if (myAssignment) {
@@ -641,9 +645,9 @@ startBtn.addEventListener("click", async () => {
   started = true;
   startBtn.disabled = true;
   stopBtn.disabled = false;
+  setStatus("Connecting\u2026");
   logEl.textContent = "";
   resetHud();
-  resetRoomUI();
 
   if (isLocalMode()) {
     const wsUrl = buildLocalWsUrl();
@@ -683,3 +687,20 @@ stopBtn.addEventListener("click", () => {
   stopBtn.disabled = true;
   started = false;
 });
+
+// ---- Debug toggle ----
+
+debugToggle.addEventListener("click", () => {
+  debugSection.classList.toggle("open");
+});
+
+// ---- Shuffle flash ----
+
+const triggerShuffleFlash = () => {
+  shuffleFlash.classList.remove("active");
+  void shuffleFlash.offsetWidth;
+  shuffleFlash.classList.add("active");
+  shuffleFlash.addEventListener("animationend", () => {
+    shuffleFlash.classList.remove("active");
+  }, { once: true });
+};
