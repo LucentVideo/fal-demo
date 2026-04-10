@@ -47,7 +47,8 @@ RUN python /tmp/patch-fal-app-metadata.py && rm -f /tmp/patch-fal-app-metadata.p
 COPY . .
 
 # ── Build frontend ────────────────────────────────────────────────────
-RUN cd frontend && npm ci && npm run build
+# Container always runs fal --local; frontend must use direct WebSocket, not fal cloud tokens.
+RUN cd frontend && npm ci && VITE_LOCAL_MODE=true npm run build
 
 # ── Pre-download models at build time ─────────────────────────────────
 ARG HF_TOKEN
