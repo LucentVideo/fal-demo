@@ -597,13 +597,7 @@ button:not(:disabled):active {
 
 /* ---- Video ---- */
 
-.video-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 16px;
-}
-
-.video-card {
+.video-stage {
   background: rgba(6, 2, 18, 0.9);
   border-radius: 8px;
   border: 2px solid rgba(0, 240, 255, 0.12);
@@ -621,14 +615,42 @@ button:not(:disabled):active {
   margin-bottom: 8px;
 }
 
-video {
+.video-wrapper {
+  position: relative;
   width: 100%;
-  min-height: 180px;
-  max-height: 360px;
+}
+
+.video-wrapper > video#remoteVideo {
+  width: 100%;
+  min-height: 280px;
   background: #05020d;
   border-radius: 6px;
   border: 1px solid rgba(0, 240, 255, 0.08);
-  position: relative;
+  display: block;
+}
+
+.pip-video {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  width: 160px;
+  height: auto;
+  border-radius: 8px;
+  border: 2px solid rgba(0, 240, 255, 0.25);
+  background: #05020d;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
+  z-index: 5;
+  cursor: grab;
+  transition: opacity 0.2s ease, border-color 0.2s ease;
+}
+
+.pip-video:hover {
+  border-color: var(--cyan);
+  box-shadow: 0 0 16px rgba(0, 240, 255, 0.25);
+}
+
+.pip-video.hidden {
+  display: none;
 }
 
 
