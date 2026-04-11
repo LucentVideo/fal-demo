@@ -295,7 +295,7 @@ class MultiPerceptionWebRTC(
 
         from core import detect_device
         from core.face_swap import FaceSwapper
-        from core.perception import YoloDetector
+        from core.yolo import YoloDetector
         from core.room import Room
 
         self._metered_secret_key = os.getenv("METERED_TURN_SECRET_KEY")
