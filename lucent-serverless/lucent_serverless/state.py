@@ -1,8 +1,9 @@
-"""Process-wide runtime state shared by websocket handlers, /health, and watchdog.
+"""Process-wide runtime state shared by websocket handlers and /health.
 
-The control plane will eventually poll /health to read these values; the
-watchdog reads them locally to decide when to terminate. Kept as module
-globals because there is exactly one runner per pod.
+The scheduler (Layer 3) polls /health to read these values and decides
+when to reap idle pods. The worker itself does not self-terminate —
+RunPod's container restart policy turns in-pod self-kill into a loop.
+Kept as module globals because there is exactly one runner per pod.
 """
 
 import threading

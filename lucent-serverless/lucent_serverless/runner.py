@@ -5,23 +5,27 @@ Sequence:
   2. find the unique App subclass in it
   3. instantiate, run setup() once
   4. walk methods for @realtime decorations and mount as websocket routes
-  5. expose /health
-  6. start the idle watchdog
-  7. uvicorn on :LUCENT_PORT
+  5. expose /health (includes active_connections + last_activity_at so the
+     scheduler can reap idle pods — the worker itself does not self-kill)
+  6. uvicorn on :LUCENT_PORT
+
+Lifecycle note: earlier drafts had an in-pod watchdog call os._exit(0) on
+idle. That doesn't work on RunPod — the container restart policy just
+relaunches the runner immediately and the pod burns money in a loop. Pod
+termination is the scheduler's job (Layer 3); the worker only exposes
+state.
 """
 
-import asyncio
 import importlib
 import inspect
 import logging
 import os
 import sys
-from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
-from . import App, state, watchdog
+from . import App, state
 
 log = logging.getLogger(__name__)
 
@@ -87,15 +91,7 @@ def make_health_handler(app_id: str):
 
 
 def build_api(instance: App, app_id: str) -> FastAPI:
-    @asynccontextmanager
-    async def lifespan(_api: FastAPI):
-        task = asyncio.create_task(watchdog.run(instance.keep_alive))
-        try:
-            yield
-        finally:
-            task.cancel()
-
-    api = FastAPI(lifespan=lifespan)
+    api = FastAPI()
     register_realtime_routes(api, instance)
     api.get("/health")(make_health_handler(app_id))
     return api
