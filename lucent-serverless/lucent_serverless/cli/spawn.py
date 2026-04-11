@@ -35,11 +35,23 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("image", help="container image ref, e.g. ghcr.io/you/lucent-echo:dev")
     p.add_argument("--name", default="lucent-spawn", help="pod name (for the RunPod console)")
     p.add_argument(
+        "--compute-type",
+        default="GPU",
+        choices=["GPU", "CPU"],
+        help="GPU pods need --gpu-type; CPU pods need --cpu-flavor",
+    )
+    p.add_argument(
         "--gpu-type",
         default="NVIDIA GeForce RTX 4090",
-        help="RunPod gpuTypeId, e.g. 'NVIDIA H100 80GB HBM3'",
+        help="RunPod gpuTypeId, e.g. 'NVIDIA H100 80GB HBM3' (ignored when --compute-type CPU)",
     )
     p.add_argument("--gpu-count", type=int, default=1)
+    p.add_argument(
+        "--cpu-flavor",
+        default="cpu3c",
+        help="RunPod cpuFlavorId, e.g. 'cpu3c' (ignored when --compute-type GPU)",
+    )
+    p.add_argument("--vcpu-count", type=int, default=2)
     p.add_argument("--cloud-type", default="SECURE", choices=["SECURE", "COMMUNITY"])
     p.add_argument("--container-disk-gb", type=int, default=40)
     p.add_argument("--volume-gb", type=int, default=0)
@@ -78,8 +90,11 @@ def main() -> int:
     spec = PodSpec(
         name=args.name,
         image=args.image,
-        gpu_type_ids=[args.gpu_type],
+        compute_type=args.compute_type,
+        gpu_type_ids=[args.gpu_type] if args.compute_type == "GPU" else [],
         gpu_count=args.gpu_count,
+        cpu_flavor_ids=[args.cpu_flavor] if args.compute_type == "CPU" else [],
+        vcpu_count=args.vcpu_count,
         cloud_type=args.cloud_type,
         container_disk_gb=args.container_disk_gb,
         volume_gb=args.volume_gb,
@@ -87,7 +102,8 @@ def main() -> int:
         env=env,
     )
 
-    print(f"creating pod ({args.image} on {args.gpu_type})...", file=sys.stderr)
+    hw = args.gpu_type if args.compute_type == "GPU" else f"CPU {args.cpu_flavor}"
+    print(f"creating pod ({args.image} on {hw})...", file=sys.stderr)
     try:
         pod = create_pod(spec)
     except RunpodError as e:

@@ -44,12 +44,20 @@ class RunpodError(RuntimeError):
 class PodSpec:
     """Minimal spec to create a pod. A lucent_serverless.App gets translated
     to this by whoever is calling create_pod (a CLI today, the scheduler
-    tomorrow)."""
+    tomorrow).
+
+    compute_type switches between GPU and CPU pods. For CPU pods, set
+    cpu_flavor_ids (e.g. ["cpu3c"]) and vcpu_count; gpu_type_ids/gpu_count
+    are ignored by the API per the OpenAPI spec.
+    """
 
     name: str
     image: str
-    gpu_type_ids: list[str]
+    compute_type: str = "GPU"
+    gpu_type_ids: list[str] = field(default_factory=list)
     gpu_count: int = 1
+    cpu_flavor_ids: list[str] = field(default_factory=list)
+    vcpu_count: int = 2
     container_disk_gb: int = 40
     volume_gb: int = 0
     ports: list[str] = field(default_factory=lambda: ["8000/http"])
@@ -92,19 +100,25 @@ def create_pod(spec: PodSpec) -> dict:
     may still be null until the container finishes booting. Use
     `wait_until_ready` to block on that.
     """
-    body = {
+    body: dict[str, Any] = {
         "name": spec.name,
         "imageName": spec.image,
-        "computeType": "GPU",
+        "computeType": spec.compute_type,
         "cloudType": spec.cloud_type,
-        "gpuTypeIds": spec.gpu_type_ids,
-        "gpuCount": spec.gpu_count,
         "interruptible": spec.interruptible,
         "containerDiskInGb": spec.container_disk_gb,
         "volumeInGb": spec.volume_gb,
         "ports": spec.ports,
         "env": spec.env,
     }
+    if spec.compute_type == "GPU":
+        body["gpuTypeIds"] = spec.gpu_type_ids
+        body["gpuCount"] = spec.gpu_count
+    elif spec.compute_type == "CPU":
+        body["cpuFlavorIds"] = spec.cpu_flavor_ids
+        body["vcpuCount"] = spec.vcpu_count
+    else:
+        raise ValueError(f"unknown compute_type {spec.compute_type!r} (expected GPU or CPU)")
     with _client() as c:
         resp = c.post("/pods", json=body)
     _raise_for_status(resp)
