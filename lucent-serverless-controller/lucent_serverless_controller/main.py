@@ -26,6 +26,7 @@ from starlette.responses import HTMLResponse, JSONResponse
 DASHBOARD_HTML = (Path(__file__).parent / "dashboard.html").read_text()
 
 from . import db
+from .jobs import router as jobs_router
 from .reaper import reaper_loop
 from .resolver import router
 from .scheduler import scheduler_loop
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
         return DASHBOARD_HTML
 
     app.include_router(router)
+    app.include_router(jobs_router)
     return app
 
 

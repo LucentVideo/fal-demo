@@ -1,13 +1,10 @@
 """SQLite database for the control plane.
 
-Two tables: apps and pods. Schema follows notes/myfal_plan.md section 5,
-adapted for what we actually learned building Layers 1-2 (CPU support,
-no in-pod watchdog, RunPod REST ids as primary keys).
-
-Thread safety: one shared connection with check_same_thread=False.
-A threading.Lock serialises all writes so the scheduler, reaper, and
-FastAPI handler threads never fight over SQLite's single-writer lock.
-Reads are lock-free (WAL mode allows concurrent reads).
+Three tables: apps, pods, and jobs. Thread safety: one shared connection
+with check_same_thread=False. A threading.Lock serialises all writes so
+the scheduler, reaper, and FastAPI handler threads never fight over
+SQLite's single-writer lock. Reads are lock-free (WAL mode allows
+concurrent reads).
 """
 
 from __future__ import annotations
@@ -51,7 +48,8 @@ def init_db() -> None:
             keep_alive_sec    INTEGER NOT NULL DEFAULT 300,
             container_disk_gb INTEGER NOT NULL DEFAULT 40,
             cloud_type        TEXT NOT NULL DEFAULT 'SECURE',
-            env               TEXT DEFAULT '{}'
+            env               TEXT DEFAULT '{}',
+            mode              TEXT NOT NULL DEFAULT 'realtime'
         );
 
         CREATE TABLE IF NOT EXISTS pods (
@@ -68,6 +66,24 @@ def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_pods_app_status
             ON pods(app_id, status);
+
+        CREATE TABLE IF NOT EXISTS jobs (
+            job_id       TEXT PRIMARY KEY,
+            app_id       TEXT NOT NULL REFERENCES apps(app_id),
+            status       TEXT NOT NULL DEFAULT 'pending',
+            input        TEXT NOT NULL,
+            output       TEXT,
+            error        TEXT,
+            worker_id    TEXT,
+            webhook_url  TEXT,
+            created_at   INTEGER NOT NULL,
+            started_at   INTEGER,
+            completed_at INTEGER,
+            ttl_sec      INTEGER DEFAULT 300
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_jobs_app_status
+            ON jobs(app_id, status, created_at);
     """)
     conn.commit()
 
@@ -98,14 +114,15 @@ def upsert_app(
     container_disk_gb: int = 40,
     cloud_type: str = "SECURE",
     env: dict | None = None,
+    mode: str = "realtime",
 ) -> None:
     with _write_lock:
         _conn().execute(
             """INSERT INTO apps (
                    app_id, image_ref, compute_type, machine_type, cpu_flavor,
                    vcpu_count, min_concurrency, max_concurrency, keep_alive_sec,
-                   container_disk_gb, cloud_type, env
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   container_disk_gb, cloud_type, env, mode
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(app_id) DO UPDATE SET
                    image_ref=excluded.image_ref,
                    compute_type=excluded.compute_type,
@@ -117,11 +134,12 @@ def upsert_app(
                    keep_alive_sec=excluded.keep_alive_sec,
                    container_disk_gb=excluded.container_disk_gb,
                    cloud_type=excluded.cloud_type,
-                   env=excluded.env
+                   env=excluded.env,
+                   mode=excluded.mode
             """,
             (app_id, image_ref, compute_type, machine_type, cpu_flavor,
              vcpu_count, min_concurrency, max_concurrency, keep_alive_sec,
-             container_disk_gb, cloud_type, json.dumps(env or {})),
+             container_disk_gb, cloud_type, json.dumps(env or {}), mode),
         )
         _conn().commit()
 
@@ -223,3 +241,117 @@ def set_pod_status(pod_id: str, status: str) -> None:
             "UPDATE pods SET status = ? WHERE pod_id = ?", (status, pod_id)
         )
         _conn().commit()
+
+
+# ── Job CRUD ──────────────────────────────────────────────────────────
+
+def insert_job(
+    job_id: str,
+    app_id: str,
+    input_json: str,
+    webhook_url: str | None = None,
+    ttl_sec: int = 300,
+) -> None:
+    now = int(time.time())
+    with _write_lock:
+        _conn().execute(
+            """INSERT INTO jobs
+               (job_id, app_id, status, input, webhook_url, created_at, ttl_sec)
+               VALUES (?, ?, 'pending', ?, ?, ?, ?)""",
+            (job_id, app_id, input_json, webhook_url, now, ttl_sec),
+        )
+        _conn().commit()
+
+
+def get_job(job_id: str) -> sqlite3.Row | None:
+    return _conn().execute(
+        "SELECT * FROM jobs WHERE job_id = ?", (job_id,)
+    ).fetchone()
+
+
+def dequeue_job(app_id: str) -> sqlite3.Row | None:
+    """Atomically claim the oldest pending job for the given app.
+
+    Under the write lock: SELECT the oldest pending row, UPDATE it to
+    running, then return it. The write lock is the mutex that prevents
+    two workers from grabbing the same job.
+    """
+    with _write_lock:
+        conn = _conn()
+        row = conn.execute(
+            """SELECT job_id FROM jobs
+               WHERE app_id = ? AND status = 'pending'
+               ORDER BY created_at
+               LIMIT 1""",
+            (app_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute(
+            "UPDATE jobs SET status = 'running', started_at = ? WHERE job_id = ?",
+            (int(time.time()), row["job_id"]),
+        )
+        conn.commit()
+        return conn.execute(
+            "SELECT * FROM jobs WHERE job_id = ?", (row["job_id"],)
+        ).fetchone()
+
+
+def complete_job(job_id: str, output_json: str) -> None:
+    with _write_lock:
+        _conn().execute(
+            """UPDATE jobs SET status = 'completed', output = ?, completed_at = ?
+               WHERE job_id = ?""",
+            (output_json, int(time.time()), job_id),
+        )
+        _conn().commit()
+
+
+def fail_job(job_id: str, error_str: str) -> None:
+    with _write_lock:
+        _conn().execute(
+            """UPDATE jobs SET status = 'failed', error = ?, completed_at = ?
+               WHERE job_id = ?""",
+            (error_str, int(time.time()), job_id),
+        )
+        _conn().commit()
+
+
+def cancel_job(job_id: str) -> bool:
+    with _write_lock:
+        cur = _conn().execute(
+            "UPDATE jobs SET status = 'cancelled' WHERE job_id = ? AND status = 'pending'",
+            (job_id,),
+        )
+        _conn().commit()
+        return cur.rowcount > 0
+
+
+def pending_job_count(app_id: str) -> int:
+    row = _conn().execute(
+        "SELECT COUNT(*) AS cnt FROM jobs WHERE app_id = ? AND status = 'pending'",
+        (app_id,),
+    ).fetchone()
+    return row["cnt"] if row else 0
+
+
+def expire_stale_jobs() -> int:
+    """Mark running jobs past their TTL as failed. Returns count expired."""
+    now = int(time.time())
+    with _write_lock:
+        cur = _conn().execute(
+            """UPDATE jobs SET status = 'failed', error = 'timeout',
+                   completed_at = ?
+               WHERE status = 'running'
+                 AND started_at IS NOT NULL
+                 AND (? - started_at) > ttl_sec""",
+            (now, now),
+        )
+        _conn().commit()
+        return cur.rowcount
+
+
+def recent_jobs(limit: int = 50) -> list[sqlite3.Row]:
+    return _conn().execute(
+        "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
+    ).fetchall()

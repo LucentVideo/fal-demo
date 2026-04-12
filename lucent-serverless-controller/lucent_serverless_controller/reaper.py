@@ -36,6 +36,15 @@ def _fresh_health(url: str) -> dict | None:
     return None
 
 
+def _is_pod_busy(health: dict | None, app_mode: str) -> bool:
+    """Check whether a pod is actively doing work, based on app mode."""
+    if health is None:
+        return False
+    if app_mode == "job":
+        return not health.get("idle", True)
+    return health.get("active_connections", 0) > 0
+
+
 def _tick() -> None:
     for pod in db.ready_idle_pods():
         app = db.get_app(pod["app_id"])
@@ -48,9 +57,8 @@ def _tick() -> None:
         # DB says idle — but the DB is up to 5s stale.
         # Re-check the pod directly before killing it.
         health = _fresh_health(pod["url"])
-        if health and health.get("active_connections", 0) > 0:
-            log.debug("pod %s looked idle in DB but has %d live connections, skipping",
-                      pod["pod_id"], health["active_connections"])
+        if _is_pod_busy(health, app["mode"]):
+            log.debug("pod %s looked idle in DB but is busy, skipping", pod["pod_id"])
             continue
 
         log.info(
