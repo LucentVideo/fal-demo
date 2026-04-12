@@ -23,7 +23,7 @@ from .scheduler import spawn_pod
 log = logging.getLogger(__name__)
 router = APIRouter()
 
-RESOLVE_TIMEOUT = 120.0
+RESOLVE_TIMEOUT = 300.0
 
 
 # ── /resolve ──────────────────────────────────────────────────────────

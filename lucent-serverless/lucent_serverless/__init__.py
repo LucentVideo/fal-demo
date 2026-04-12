@@ -265,7 +265,7 @@ def resolve(
     import httpx
 
     url = _controller_url(controller_url)
-    with httpx.Client(timeout=180.0) as c:
+    with httpx.Client(timeout=360.0) as c:
         resp = c.get(
             f"{url}/resolve",
             params={"app_id": app_id},
