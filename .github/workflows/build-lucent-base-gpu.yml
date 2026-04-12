@@ -6,8 +6,6 @@ on:
     paths:
       - '.github/workflows/build-lucent-base-gpu.yml'
       - 'lucent-serverless/images/gpu/**'
-      - 'lucent-serverless/lucent_serverless/**'
-      - 'lucent-serverless/pyproject.toml'
 
 env:
   IMAGE: raylightdimi/lucent-base-gpu
