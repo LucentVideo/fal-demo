@@ -27,6 +27,7 @@ DASHBOARD_HTML = (Path(__file__).parent / "dashboard.html").read_text()
 
 from . import db
 from .code_store import CODE_DIR, code_router
+from .package_store import PACKAGE_DIR, package_router
 from .reaper import reaper_loop
 from .resolver import router
 from .scheduler import scheduler_loop
@@ -38,6 +39,7 @@ log = logging.getLogger(__name__)
 async def lifespan(_app: FastAPI):
     db.init_db()
     CODE_DIR.mkdir(parents=True, exist_ok=True)
+    PACKAGE_DIR.mkdir(parents=True, exist_ok=True)
     stop = threading.Event()
 
     sched = threading.Thread(
@@ -68,8 +70,10 @@ def create_app() -> FastAPI:
     def _is_public(path: str, method: str) -> bool:
         if path in PUBLIC_PATHS:
             return True
-        # Allow GET on code download (pods don't have API keys)
+        # Allow GET on code/package download (pods don't have API keys)
         if method == "GET" and any(path.startswith(p) for p in PUBLIC_PREFIXES) and path.endswith("/code"):
+            return True
+        if method == "GET" and path.startswith("/packages/"):
             return True
         return False
 
@@ -97,6 +101,7 @@ def create_app() -> FastAPI:
 
     app.include_router(router)
     app.include_router(code_router)
+    app.include_router(package_router)
     return app
 
 
