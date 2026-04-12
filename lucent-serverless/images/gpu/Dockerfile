@@ -27,7 +27,7 @@ WORKDIR /opt/app
 # ── Install lucent-serverless package (runner + SDK) ─────────────────
 COPY pyproject.toml /opt/app/pyproject.toml
 COPY lucent_serverless /opt/app/lucent_serverless
-RUN uv pip install --system --no-cache .
+RUN uv pip install --system --break-system-packages --no-cache .
 
 # ── Common heavy ML deps (pre-baked so users don't wait) ─────────────
 # Base image already has: torch, torchvision, torchaudio, numpy

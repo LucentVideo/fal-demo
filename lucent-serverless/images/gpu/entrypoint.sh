@@ -14,7 +14,7 @@ fi
 # ── Install extra deps ──────────────────────────────────────────────
 if [ -f /opt/app/requirements.txt ]; then
     echo "[lucent] installing requirements.txt"
-    uv pip install --system --no-cache -r /opt/app/requirements.txt
+    uv pip install --system --break-system-packages --no-cache -r /opt/app/requirements.txt
     python3 -c "import time,json; d=json.load(open('/tmp/lucent_boot.json')); d['deps_installed']=time.time(); json.dump(d,open('/tmp/lucent_boot.json','w'))"
 fi
 
