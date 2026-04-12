@@ -11,7 +11,6 @@ import lucent_serverless as ls
 
 class EchoApp(ls.App):
     app_id = "echo"
-    image_ref = "raylightdimi/lucent-echo:latest"
     compute_type = "CPU"
     cpu_flavor = "cpu3c"
     container_disk_gb = 10

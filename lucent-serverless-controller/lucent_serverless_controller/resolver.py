@@ -122,3 +122,10 @@ def remove_app(app_id: str):
 @router.get("/pods")
 def list_pods():
     return [dict(row) for row in db.live_pods()]
+
+
+# ── Pod history ──────────────────────────────────────────────────────
+
+@router.get("/pod-history")
+def pod_history(app_id: str | None = None, limit: int = 50):
+    return [dict(row) for row in db.list_pod_history(app_id=app_id, limit=limit)]

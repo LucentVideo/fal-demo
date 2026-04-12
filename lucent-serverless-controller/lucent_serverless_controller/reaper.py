@@ -58,11 +58,13 @@ def _tick() -> None:
             pod["pod_id"], pod["app_id"], idle_for, app["keep_alive_sec"],
         )
         db.set_pod_status(pod["pod_id"], "draining")
+        db.set_pod_history_status(pod["pod_id"], "draining")
         try:
             terminate_pod(pod["pod_id"])
         except RunpodError as e:
             log.warning("terminate failed for pod %s: %s", pod["pod_id"], e)
         db.set_pod_status(pod["pod_id"], "dead")
+        db.set_pod_history_status(pod["pod_id"], "terminated")
 
 
 def reaper_loop(stop: threading.Event) -> None:

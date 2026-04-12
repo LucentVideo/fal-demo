@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 
@@ -20,6 +21,7 @@ from lucent_serverless.runpod_client import (
 )
 
 from . import db
+from .code_store import CODE_DIR
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +35,13 @@ def spawn_pod(app: dict) -> str:
     """Create a RunPod pod for the given app. Returns the RunPod pod id."""
     env = json.loads(app["env"] or "{}")
     env.setdefault("LUCENT_APP_ID", app["app_id"])
+
+    # If user code has been uploaded, tell the pod where to fetch it
+    code_tar = CODE_DIR / f"{app['app_id']}.tar.gz"
+    if code_tar.exists():
+        controller_url = os.environ.get("LUCENT_CONTROLLER_URL", "")
+        if controller_url:
+            env["LUCENT_CODE_URL"] = f"{controller_url}/apps/{app['app_id']}/code"
 
     spec = PodSpec(
         name=f"lucent-{app['app_id']}",
@@ -56,6 +65,7 @@ def spawn_pod(app: dict) -> str:
     url = pod_proxy_url(pod_id)
 
     db.insert_pod(pod_id, app["app_id"], url)
+    db.insert_pod_history(pod_id, app["app_id"])
     log.info("spawned pod %s for app %s", pod_id, app["app_id"])
     return pod_id
 
@@ -94,6 +104,13 @@ def _poll_pod(pod: dict) -> None:
     if pod["status"] == "pending":
         db.promote_pod(pod["pod_id"], url)
         log.info("pod %s promoted to ready", pod["pod_id"])
+
+    # Record boot timings into pod_history (once per pod)
+    boot_timings = data.get("boot_timings")
+    if boot_timings and not db.boot_timings_recorded(pod["pod_id"]):
+        db.update_pod_boot_timings(pod["pod_id"], boot_timings)
+        log.info("recorded boot timings for %s/%s: %.2fs",
+                 pod["app_id"], pod["pod_id"], boot_timings.get("total_sec", 0))
 
 
 # ── Loop ──────────────────────────────────────────────────────────────
