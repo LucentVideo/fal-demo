@@ -100,6 +100,7 @@
   .timing-bar { display: flex; height: 18px; border-radius: 4px; overflow: hidden; min-width: 180px; }
   .timing-bar .seg { display: flex; align-items: center; justify-content: center;
                      font-size: 10px; font-weight: 500; color: #fff; white-space: nowrap; overflow: hidden; }
+  .seg-infra { background: #7c3aed; }
   .seg-boot { background: #334155; }
   .seg-code { background: #6366f1; }
   .seg-deps { background: #f59e0b; }
@@ -202,15 +203,16 @@
       <h4 id="history-title">Pod History</h4>
       <div class="stats-row" id="history-stats"></div>
       <div class="timing-legend">
-        <span><span class="dot" style="background:#334155"></span> Boot overhead</span>
+        <span><span class="dot" style="background:#7c3aed"></span> Infra (RunPod)</span>
         <span><span class="dot" style="background:#6366f1"></span> Code download</span>
         <span><span class="dot" style="background:#f59e0b"></span> Deps install</span>
         <span><span class="dot" style="background:#22c55e"></span> setup()</span>
         <span><span class="dot" style="background:#475569"></span> Uvicorn start</span>
+        <span><span class="dot" style="background:#334155"></span> Other</span>
       </div>
       <table style="margin-top:12px">
         <thead>
-          <tr><th>Pod</th><th>Status</th><th>Boot Time</th><th>Breakdown</th><th>Lifetime</th><th>When</th></tr>
+          <tr><th>Pod</th><th>Status</th><th>Cold Start</th><th>Breakdown</th><th>Lifetime</th><th>When</th></tr>
         </thead>
         <tbody id="history-body"></tbody>
       </table>
@@ -336,17 +338,17 @@ async function refreshHistory(appId) {
 
   document.getElementById('history-title').textContent = `Pod History: ${appId}`;
 
-  // Compute stats from pods that have boot timings
-  const booted = history.filter(h => h.total_boot_sec != null);
+  // Compute stats from pods that have cold start timings
+  const booted = history.filter(h => h.total_cold_start_sec != null);
   const statsEl = document.getElementById('history-stats');
   if (booted.length > 0) {
-    const times = booted.map(h => h.total_boot_sec).sort((a, b) => a - b);
+    const times = booted.map(h => h.total_cold_start_sec).sort((a, b) => a - b);
     const avg = times.reduce((s, t) => s + t, 0) / times.length;
     const min = times[0];
     const max = times[times.length - 1];
     const p50 = times[Math.floor(times.length * 0.5)];
     statsEl.innerHTML = `
-      <div class="stat"><div class="val">${avg.toFixed(1)}s</div><div class="lbl">Avg boot</div></div>
+      <div class="stat"><div class="val">${avg.toFixed(1)}s</div><div class="lbl">Avg cold start</div></div>
       <div class="stat"><div class="val">${min.toFixed(1)}s</div><div class="lbl">Fastest</div></div>
       <div class="stat"><div class="val">${max.toFixed(1)}s</div><div class="lbl">Slowest</div></div>
       <div class="stat"><div class="val">${p50.toFixed(1)}s</div><div class="lbl">p50</div></div>
@@ -361,8 +363,8 @@ async function refreshHistory(appId) {
     body.innerHTML = '<tr><td colspan="6" class="empty">No pod history</td></tr>';
   } else {
     body.innerHTML = history.map(h => {
-      const bootTime = h.total_boot_sec != null ? `${h.total_boot_sec.toFixed(1)}s` : '-';
-      const bar = h.total_boot_sec != null ? buildTimingBar(h) : '<span class="mono">-</span>';
+      const coldStart = h.total_cold_start_sec != null ? `${h.total_cold_start_sec.toFixed(1)}s` : '-';
+      const bar = h.total_cold_start_sec != null ? buildTimingBar(h) : '<span class="mono">-</span>';
       let lifetime = '-';
       if (h.terminated_at && h.created_at) {
         const dur = h.terminated_at - h.created_at;
@@ -374,7 +376,7 @@ async function refreshHistory(appId) {
         <tr>
           <td class="mono">${h.pod_id.substring(0, 12)}</td>
           <td><span class="badge badge-${h.status}">${h.status}</span></td>
-          <td class="total-time">${bootTime}</td>
+          <td class="total-time">${coldStart}</td>
           <td>${bar}</td>
           <td>${lifetime}</td>
           <td>${timeAgo(h.created_at)}</td>
@@ -392,21 +394,26 @@ function timeAgo(unix) {
 }
 
 function buildTimingBar(h) {
-  const total = h.total_boot_sec;
+  const total = h.total_cold_start_sec;
   if (!total || total <= 0) return '<span class="mono">-</span>';
 
-  const bs = h.boot_start;
   const segments = [];
 
+  // RunPod overhead: created_at -> boot_start (scheduling, image pull, container start)
+  if (h.boot_start && h.created_at) {
+    const d = h.boot_start - h.created_at;
+    if (d > 0.1) segments.push({ cls: 'seg-infra', dur: d, label: 'infra' });
+  }
+
   // Code download: boot_start -> code_downloaded
-  if (h.code_downloaded) {
-    const d = h.code_downloaded - bs;
+  if (h.code_downloaded && h.boot_start) {
+    const d = h.code_downloaded - h.boot_start;
     if (d > 0.01) segments.push({ cls: 'seg-code', dur: d, label: 'code' });
   }
 
   // Deps install: code_downloaded -> deps_installed
   if (h.deps_installed) {
-    const start = h.code_downloaded || bs;
+    const start = h.code_downloaded || h.boot_start;
     const d = h.deps_installed - start;
     if (d > 0.01) segments.push({ cls: 'seg-deps', dur: d, label: 'deps' });
   }
@@ -423,10 +430,10 @@ function buildTimingBar(h) {
     if (d > 0.01) segments.push({ cls: 'seg-other', dur: d, label: 'start' });
   }
 
-  // Anything unaccounted = boot overhead (entrypoint init, Python startup, imports)
+  // Anything unaccounted = misc overhead
   const accounted = segments.reduce((s, x) => s + x.dur, 0);
   const overhead = total - accounted;
-  if (overhead > 0.1) segments.unshift({ cls: 'seg-boot', dur: overhead, label: 'boot' });
+  if (overhead > 0.1) segments.push({ cls: 'seg-boot', dur: overhead, label: 'other' });
 
   const segsHtml = segments.map(s => {
     const pct = Math.max((s.dur / total) * 100, 2);

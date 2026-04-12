@@ -79,7 +79,8 @@ def init_db() -> None:
             setup_start     REAL,
             setup_done      REAL,
             ready_at        REAL,
-            total_boot_sec  REAL,
+            total_boot_sec      REAL,
+            total_cold_start_sec REAL,
             terminated_at   INTEGER,
             status          TEXT NOT NULL DEFAULT 'pending'
         );
@@ -256,11 +257,20 @@ def insert_pod_history(pod_id: str, app_id: str) -> None:
 
 def update_pod_boot_timings(pod_id: str, timings: dict) -> None:
     with _write_lock:
+        ready_at = timings.get("ready_at")
+        # Compute full cold start: created_at → ready_at (includes RunPod overhead)
+        row = _conn().execute(
+            "SELECT created_at FROM pod_history WHERE pod_id = ?", (pod_id,)
+        ).fetchone()
+        total_cold_start = None
+        if row and ready_at:
+            total_cold_start = round(ready_at - row["created_at"], 2)
+
         _conn().execute(
             """UPDATE pod_history SET
                    boot_start = ?, code_downloaded = ?, deps_installed = ?,
                    setup_start = ?, setup_done = ?, ready_at = ?,
-                   total_boot_sec = ?, status = 'ready'
+                   total_boot_sec = ?, total_cold_start_sec = ?, status = 'ready'
                WHERE pod_id = ? AND ready_at IS NULL""",
             (
                 timings.get("boot_start"),
@@ -268,8 +278,9 @@ def update_pod_boot_timings(pod_id: str, timings: dict) -> None:
                 timings.get("deps_installed"),
                 timings.get("setup_start"),
                 timings.get("setup_done"),
-                timings.get("ready_at"),
+                ready_at,
                 timings.get("total_sec"),
+                total_cold_start,
                 pod_id,
             ),
         )
