@@ -68,7 +68,7 @@ def create_app() -> FastAPI:
     def _is_public(path: str, method: str) -> bool:
         if path in PUBLIC_PATHS:
             return True
-        # Allow GET on code/package download (pods don't have API keys)
+        # Allow GET on code download (pods don't have API keys)
         if method == "GET" and any(path.startswith(p) for p in PUBLIC_PREFIXES) and path.endswith("/code"):
             return True
         return False
