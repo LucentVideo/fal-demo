@@ -26,7 +26,7 @@ jobs:
           LUCENT_CONTROLLER_URL: ${{ secrets.LUCENT_CONTROLLER_URL }}
           LUCENT_API_KEY: ${{ secrets.LUCENT_API_KEY }}
         run: |
-          WHL=$(ls lucent-serverless/dist/*.whl)
+          WHL=$(ls dist/*.whl)
           echo "Uploading $WHL"
           curl -fsSL -X PUT \
             -H "Authorization: Bearer $LUCENT_API_KEY" \
