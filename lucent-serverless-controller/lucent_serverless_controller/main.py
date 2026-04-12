@@ -14,13 +14,16 @@ import logging
 import os
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 import uvicorn
 from fastapi import FastAPI
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse
+
+DASHBOARD_HTML = (Path(__file__).parent / "dashboard.html").read_text()
 
 from . import db
 from .reaper import reaper_loop
@@ -56,9 +59,12 @@ async def lifespan(_app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="lucent-serverless-controller", lifespan=lifespan)
 
+    # Auth: exempt /health (RunPod probe) and /dashboard (has its own login)
+    PUBLIC_PATHS = {"/health", "/dashboard"}
+
     @app.middleware("http")
     async def check_api_key(request: Request, call_next):
-        if request.url.path == "/health":
+        if request.url.path in PUBLIC_PATHS:
             return await call_next(request)
         expected = os.environ.get("LUCENT_API_KEY")
         if expected:
@@ -73,6 +79,10 @@ def create_app() -> FastAPI:
     @app.get("/health")
     def health():
         return {"status": "ok", "service": "lucent-controller"}
+
+    @app.get("/dashboard", response_class=HTMLResponse)
+    def dashboard():
+        return DASHBOARD_HTML
 
     app.include_router(router)
     return app

@@ -4,9 +4,10 @@ Two tables: apps and pods. Schema follows notes/myfal_plan.md section 5,
 adapted for what we actually learned building Layers 1-2 (CPU support,
 no in-pod watchdog, RunPod REST ids as primary keys).
 
-Thread safety: each thread gets its own connection via threading.local().
-WAL mode allows concurrent reads from the scheduler, reaper, and FastAPI
-handler threads without blocking.
+Thread safety: one shared connection with check_same_thread=False.
+A threading.Lock serialises all writes so the scheduler, reaper, and
+FastAPI handler threads never fight over SQLite's single-writer lock.
+Reads are lock-free (WAL mode allows concurrent reads).
 """
 
 from __future__ import annotations
@@ -19,16 +20,20 @@ from pathlib import Path
 
 DB_PATH = Path("lucent_controller.db")
 
-_local = threading.local()
+_conn_singleton: sqlite3.Connection | None = None
+_write_lock = threading.Lock()
 
 
 def _conn() -> sqlite3.Connection:
-    if not hasattr(_local, "conn"):
-        _local.conn = sqlite3.connect(str(DB_PATH))
-        _local.conn.row_factory = sqlite3.Row
-        _local.conn.execute("PRAGMA journal_mode=WAL")
-        _local.conn.execute("PRAGMA foreign_keys=ON")
-    return _local.conn
+    global _conn_singleton
+    if _conn_singleton is None:
+        _conn_singleton = sqlite3.connect(
+            str(DB_PATH), check_same_thread=False, timeout=10.0
+        )
+        _conn_singleton.row_factory = sqlite3.Row
+        _conn_singleton.execute("PRAGMA journal_mode=WAL")
+        _conn_singleton.execute("PRAGMA foreign_keys=ON")
+    return _conn_singleton
 
 
 def init_db() -> None:
@@ -94,50 +99,53 @@ def upsert_app(
     cloud_type: str = "SECURE",
     env: dict | None = None,
 ) -> None:
-    _conn().execute(
-        """INSERT INTO apps (
-               app_id, image_ref, compute_type, machine_type, cpu_flavor,
-               vcpu_count, min_concurrency, max_concurrency, keep_alive_sec,
-               container_disk_gb, cloud_type, env
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(app_id) DO UPDATE SET
-               image_ref=excluded.image_ref,
-               compute_type=excluded.compute_type,
-               machine_type=excluded.machine_type,
-               cpu_flavor=excluded.cpu_flavor,
-               vcpu_count=excluded.vcpu_count,
-               min_concurrency=excluded.min_concurrency,
-               max_concurrency=excluded.max_concurrency,
-               keep_alive_sec=excluded.keep_alive_sec,
-               container_disk_gb=excluded.container_disk_gb,
-               cloud_type=excluded.cloud_type,
-               env=excluded.env
-        """,
-        (app_id, image_ref, compute_type, machine_type, cpu_flavor,
-         vcpu_count, min_concurrency, max_concurrency, keep_alive_sec,
-         container_disk_gb, cloud_type, json.dumps(env or {})),
-    )
-    _conn().commit()
+    with _write_lock:
+        _conn().execute(
+            """INSERT INTO apps (
+                   app_id, image_ref, compute_type, machine_type, cpu_flavor,
+                   vcpu_count, min_concurrency, max_concurrency, keep_alive_sec,
+                   container_disk_gb, cloud_type, env
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(app_id) DO UPDATE SET
+                   image_ref=excluded.image_ref,
+                   compute_type=excluded.compute_type,
+                   machine_type=excluded.machine_type,
+                   cpu_flavor=excluded.cpu_flavor,
+                   vcpu_count=excluded.vcpu_count,
+                   min_concurrency=excluded.min_concurrency,
+                   max_concurrency=excluded.max_concurrency,
+                   keep_alive_sec=excluded.keep_alive_sec,
+                   container_disk_gb=excluded.container_disk_gb,
+                   cloud_type=excluded.cloud_type,
+                   env=excluded.env
+            """,
+            (app_id, image_ref, compute_type, machine_type, cpu_flavor,
+             vcpu_count, min_concurrency, max_concurrency, keep_alive_sec,
+             container_disk_gb, cloud_type, json.dumps(env or {})),
+        )
+        _conn().commit()
 
 
 def delete_app(app_id: str) -> bool:
-    cur = _conn().execute("DELETE FROM apps WHERE app_id = ?", (app_id,))
-    _conn().commit()
-    return cur.rowcount > 0
+    with _write_lock:
+        cur = _conn().execute("DELETE FROM apps WHERE app_id = ?", (app_id,))
+        _conn().commit()
+        return cur.rowcount > 0
 
 
 # ── Pod CRUD ──────────────────────────────────────────────────────────
 
 def insert_pod(pod_id: str, app_id: str, url: str | None = None) -> None:
     now = int(time.time())
-    _conn().execute(
-        """INSERT INTO pods
-           (pod_id, app_id, url, status, active_connections,
-            last_activity_at, started_at)
-           VALUES (?, ?, ?, 'pending', 0, ?, ?)""",
-        (pod_id, app_id, url, now, now),
-    )
-    _conn().commit()
+    with _write_lock:
+        _conn().execute(
+            """INSERT INTO pods
+               (pod_id, app_id, url, status, active_connections,
+                last_activity_at, started_at)
+               VALUES (?, ?, ?, 'pending', 0, ?, ?)""",
+            (pod_id, app_id, url, now, now),
+        )
+        _conn().commit()
 
 
 def get_pod(pod_id: str) -> sqlite3.Row | None:
@@ -173,41 +181,45 @@ def ready_idle_pods() -> list[sqlite3.Row]:
 def update_pod_health(
     pod_id: str, active_connections: int, last_activity_at: int
 ) -> None:
-    _conn().execute(
-        """UPDATE pods SET
-               active_connections = ?,
-               last_activity_at = ?,
-               last_health_poll = ?,
-               failed_polls = 0
-           WHERE pod_id = ?""",
-        (active_connections, last_activity_at, int(time.time()), pod_id),
-    )
-    _conn().commit()
+    with _write_lock:
+        _conn().execute(
+            """UPDATE pods SET
+                   active_connections = ?,
+                   last_activity_at = ?,
+                   last_health_poll = ?,
+                   failed_polls = 0
+               WHERE pod_id = ?""",
+            (active_connections, last_activity_at, int(time.time()), pod_id),
+        )
+        _conn().commit()
 
 
 def promote_pod(pod_id: str, url: str) -> None:
-    _conn().execute(
-        "UPDATE pods SET status = 'ready', url = ? WHERE pod_id = ?",
-        (url, pod_id),
-    )
-    _conn().commit()
+    with _write_lock:
+        _conn().execute(
+            "UPDATE pods SET status = 'ready', url = ? WHERE pod_id = ?",
+            (url, pod_id),
+        )
+        _conn().commit()
 
 
 def increment_failed_polls(pod_id: str) -> int:
-    conn = _conn()
-    conn.execute(
-        "UPDATE pods SET failed_polls = failed_polls + 1 WHERE pod_id = ?",
-        (pod_id,),
-    )
-    conn.commit()
-    row = conn.execute(
-        "SELECT failed_polls FROM pods WHERE pod_id = ?", (pod_id,)
-    ).fetchone()
-    return row["failed_polls"] if row else 0
+    with _write_lock:
+        conn = _conn()
+        conn.execute(
+            "UPDATE pods SET failed_polls = failed_polls + 1 WHERE pod_id = ?",
+            (pod_id,),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT failed_polls FROM pods WHERE pod_id = ?", (pod_id,)
+        ).fetchone()
+        return row["failed_polls"] if row else 0
 
 
 def set_pod_status(pod_id: str, status: str) -> None:
-    _conn().execute(
-        "UPDATE pods SET status = ? WHERE pod_id = ?", (status, pod_id)
-    )
-    _conn().commit()
+    with _write_lock:
+        _conn().execute(
+            "UPDATE pods SET status = ? WHERE pod_id = ?", (status, pod_id)
+        )
+        _conn().commit()

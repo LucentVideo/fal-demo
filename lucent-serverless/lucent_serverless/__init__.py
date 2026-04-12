@@ -13,13 +13,11 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 
-import httpx
-
 # The controller runs as a persistent CPU pod on RunPod.
 # Override via LUCENT_CONTROLLER_URL env var.
 CONTROLLER_URL: str = os.environ.get(
     "LUCENT_CONTROLLER_URL",
-    "https://mlnauuciadxjcb-8000.proxy.runpod.net",
+    "https://dxdfhdmmgl2wtf-8000.proxy.runpod.net",
 )
 
 
@@ -98,6 +96,8 @@ def deploy(
     """
     app_id = app_cls.app_id or app_cls.__name__.lower()
 
+    import httpx
+
     if not app_cls.image_ref:
         raise ValueError(f"{app_cls.__name__}.image_ref is required")
 
@@ -136,6 +136,8 @@ def resolve(
     Cold-starts a pod if none are warm. Returns the pod's base URL
     (e.g. "https://{pod}-8000.proxy.runpod.net").
     """
+    import httpx
+
     url = _controller_url(controller_url)
     with httpx.Client(timeout=180.0) as c:
         resp = c.get(
