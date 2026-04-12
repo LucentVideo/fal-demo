@@ -718,6 +718,23 @@ class MultiPerceptionWebRTC(ls.App):
 # ---------- Local launcher ------------------------------------------------
 
 if __name__ == "__main__":
-    info = MultiPerceptionWebRTC.spawn()
+    import os
+
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
+    # Forward secrets the pod needs at setup() time.
+    pod_env = {
+        k: v
+        for k, v in {
+            "METERED_TURN_SECRET_KEY": os.environ.get("METERED_TURN_SECRET_KEY"),
+            "METERED_TURN_LABEL": os.environ.get("METERED_TURN_LABEL"),
+        }.items()
+        if v
+    }
+
+    info = MultiPerceptionWebRTC.spawn(env=pod_env)
     print(f"App ID: {info.app_id}")
     print(f"Realtime endpoint: {info.pod_url}/realtime")
+    print(f"WebSocket URL:     {info.pod_url.replace('https://', 'wss://')}/realtime")

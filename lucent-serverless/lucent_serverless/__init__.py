@@ -75,6 +75,7 @@ class App:
         cls,
         *,
         source_dir: str | Path | None = None,
+        env: dict[str, str] | None = None,
         controller_url: str | None = None,
         api_key: str | None = None,
     ) -> SpawnInfo:
@@ -85,6 +86,7 @@ class App:
 
         source_dir: directory containing app code to upload. If None,
         inferred from the file where the App subclass is defined.
+        env: dict of env vars to inject into every spawned pod.
         """
         import inspect as _inspect
 
@@ -92,7 +94,7 @@ class App:
 
         load_dotenv()
         app_id = cls.app_id or cls.__name__.lower()
-        deploy(cls, controller_url=controller_url, api_key=api_key)
+        deploy(cls, env=env, controller_url=controller_url, api_key=api_key)
 
         # Upload the app code
         if source_dir is None:
@@ -147,6 +149,7 @@ def _controller_url(override: str | None = None) -> str:
 def deploy(
     app_cls: type[App],
     *,
+    env: dict[str, str] | None = None,
     controller_url: str | None = None,
     api_key: str | None = None,
 ) -> None:
@@ -179,6 +182,7 @@ def deploy(
         "keep_alive_sec": app_cls.keep_alive,
         "container_disk_gb": app_cls.container_disk_gb,
         "cloud_type": app_cls.cloud_type,
+        "env": env or {},
     }
 
     url = _controller_url(controller_url)
