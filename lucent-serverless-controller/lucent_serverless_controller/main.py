@@ -1,17 +1,17 @@
 """lucent-serverless-controller: the control plane.
 
-Runs on your laptop. Owns the pod table, runs the scheduler and reaper
-loops, exposes /resolve for clients to get a pod URL.
+Deployed as a persistent CPU pod on RunPod. Owns the pod table, runs
+the scheduler and reaper loops, exposes /resolve for clients.
 
-    lucent-controller          # starts on :9000
-    curl localhost:9000/apps   # list registered apps
-    curl localhost:9000/pods   # list live pods
-    curl localhost:9000/resolve?app_id=echo  # get (or cold-start) a pod
+Auth: set LUCENT_API_KEY env var. All endpoints except /health require
+Authorization: Bearer <key>. If LUCENT_API_KEY is unset, auth is
+disabled (local dev mode).
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from contextlib import asynccontextmanager
 
@@ -19,6 +19,8 @@ from dotenv import load_dotenv
 
 import uvicorn
 from fastapi import FastAPI
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from . import db
 from .reaper import reaper_loop
@@ -53,6 +55,25 @@ async def lifespan(_app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="lucent-serverless-controller", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def check_api_key(request: Request, call_next):
+        if request.url.path == "/health":
+            return await call_next(request)
+        expected = os.environ.get("LUCENT_API_KEY")
+        if expected:
+            auth = request.headers.get("authorization", "")
+            if not auth.startswith("Bearer ") or auth[7:] != expected:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "invalid or missing API key"},
+                )
+        return await call_next(request)
+
+    @app.get("/health")
+    def health():
+        return {"status": "ok", "service": "lucent-controller"}
+
     app.include_router(router)
     return app
 
@@ -63,7 +84,7 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    port = 9000
+    port = int(os.environ.get("LUCENT_PORT", "8000"))
     app = create_app()
     log.info("controller listening on :%d", port)
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
