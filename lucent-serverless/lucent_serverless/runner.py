@@ -18,9 +18,12 @@ state.
 
 import importlib
 import inspect
+import json
 import logging
 import os
 import sys
+import time
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -90,6 +93,19 @@ def make_health_handler(app_id: str):
     return health
 
 
+BOOT_TIMINGS_FILE = Path("/tmp/lucent_boot.json")
+
+
+def _load_boot_timings() -> dict:
+    """Read timing data written by entrypoint.sh."""
+    if BOOT_TIMINGS_FILE.exists():
+        try:
+            return json.loads(BOOT_TIMINGS_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
 def build_api(instance: App, app_id: str) -> FastAPI:
     api = FastAPI()
     register_realtime_routes(api, instance)
@@ -107,6 +123,9 @@ def main() -> None:
     app_id = os.environ.get("LUCENT_APP_ID", module_name)
     port = int(os.environ.get("LUCENT_PORT", "8000"))
 
+    # Load entrypoint timings (boot_start, code_downloaded, deps_installed)
+    timings = _load_boot_timings()
+
     sys.path.insert(0, os.getcwd())
     log.info("importing user module %r", module_name)
     module = importlib.import_module(module_name)
@@ -114,10 +133,22 @@ def main() -> None:
     cls = find_app_class(module)
     log.info("instantiating %s", cls.__name__)
     instance = cls()
+
     log.info("running %s.setup()", cls.__name__)
+    timings["setup_start"] = time.time()
     instance.setup()
+    timings["setup_done"] = time.time()
 
     api = build_api(instance, app_id)
+
+    # Record ready timestamp and compute total
+    timings["ready_at"] = time.time()
+    boot_start = timings.get("boot_start", timings["ready_at"])
+    timings["total_sec"] = round(timings["ready_at"] - boot_start, 2)
+    log.info("boot complete in %.2fs", timings["total_sec"])
+
+    state.set_boot_timings(timings)
+
     log.info("uvicorn listening on :%d", port)
     uvicorn.run(api, host="0.0.0.0", port=port, log_level="info")
 

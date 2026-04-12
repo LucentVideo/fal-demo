@@ -68,6 +68,24 @@ def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_pods_app_status
             ON pods(app_id, status);
+
+        CREATE TABLE IF NOT EXISTS pod_history (
+            pod_id          TEXT PRIMARY KEY,
+            app_id          TEXT NOT NULL,
+            created_at      INTEGER NOT NULL,
+            boot_start      REAL,
+            code_downloaded REAL,
+            deps_installed  REAL,
+            setup_start     REAL,
+            setup_done      REAL,
+            ready_at        REAL,
+            total_boot_sec  REAL,
+            terminated_at   INTEGER,
+            status          TEXT NOT NULL DEFAULT 'pending'
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pod_history_app
+            ON pod_history(app_id, created_at DESC);
     """)
     conn.commit()
 
@@ -223,3 +241,71 @@ def set_pod_status(pod_id: str, status: str) -> None:
             "UPDATE pods SET status = ? WHERE pod_id = ?", (status, pod_id)
         )
         _conn().commit()
+
+
+# ── Pod history ──────────────────────���───────────────────────────────
+
+def insert_pod_history(pod_id: str, app_id: str) -> None:
+    with _write_lock:
+        _conn().execute(
+            "INSERT OR IGNORE INTO pod_history (pod_id, app_id, created_at, status) VALUES (?, ?, ?, 'pending')",
+            (pod_id, app_id, int(time.time())),
+        )
+        _conn().commit()
+
+
+def update_pod_boot_timings(pod_id: str, timings: dict) -> None:
+    with _write_lock:
+        _conn().execute(
+            """UPDATE pod_history SET
+                   boot_start = ?, code_downloaded = ?, deps_installed = ?,
+                   setup_start = ?, setup_done = ?, ready_at = ?,
+                   total_boot_sec = ?, status = 'ready'
+               WHERE pod_id = ? AND ready_at IS NULL""",
+            (
+                timings.get("boot_start"),
+                timings.get("code_downloaded"),
+                timings.get("deps_installed"),
+                timings.get("setup_start"),
+                timings.get("setup_done"),
+                timings.get("ready_at"),
+                timings.get("total_sec"),
+                pod_id,
+            ),
+        )
+        _conn().commit()
+
+
+def boot_timings_recorded(pod_id: str) -> bool:
+    row = _conn().execute(
+        "SELECT 1 FROM pod_history WHERE pod_id = ? AND ready_at IS NOT NULL", (pod_id,)
+    ).fetchone()
+    return row is not None
+
+
+def set_pod_history_status(pod_id: str, status: str) -> None:
+    now = int(time.time())
+    with _write_lock:
+        if status in ("dead", "terminated"):
+            _conn().execute(
+                "UPDATE pod_history SET status = ?, terminated_at = ? WHERE pod_id = ?",
+                (status, now, pod_id),
+            )
+        else:
+            _conn().execute(
+                "UPDATE pod_history SET status = ? WHERE pod_id = ?",
+                (status, pod_id),
+            )
+        _conn().commit()
+
+
+def list_pod_history(app_id: str | None = None, limit: int = 50) -> list[sqlite3.Row]:
+    if app_id:
+        return _conn().execute(
+            "SELECT * FROM pod_history WHERE app_id = ? ORDER BY created_at DESC LIMIT ?",
+            (app_id, limit),
+        ).fetchall()
+    return _conn().execute(
+        "SELECT * FROM pod_history ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
