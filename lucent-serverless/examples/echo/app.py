@@ -1,8 +1,10 @@
 """Trivial echo app — no GPU, no models. Proves the platform works end-to-end.
 
-Deploy:  python app.py
-Use:     async with ls.connect("echo") as ws: ...
+Run:   python app.py
+CLI:   lucent-deploy app.py
 """
+
+import asyncio
 
 import lucent_serverless as ls
 
@@ -27,7 +29,12 @@ class EchoApp(ls.App):
 
 
 if __name__ == "__main__":
-    from dotenv import load_dotenv
+    info = EchoApp.spawn()
+    print(f"pod ready: {info.pod_url}")
 
-    load_dotenv()
-    ls.deploy(EchoApp)
+    async def main():
+        async with ls.connect(info.app_id, "/realtime") as ws:
+            await ws.send("hello from spawn!")
+            print(await ws.recv())
+
+    asyncio.run(main())

@@ -12,6 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
+lucent-deploy = "lucent_serverless.cli.deploy:main"
 lucent-spawn = "lucent_serverless.cli.spawn:main"
 lucent-terminate = "lucent_serverless.cli.terminate:main"
 lucent-runner = "lucent_serverless.runner:main"

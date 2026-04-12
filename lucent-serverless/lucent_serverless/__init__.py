@@ -21,6 +21,17 @@ CONTROLLER_URL: str = os.environ.get(
 )
 
 
+class SpawnInfo:
+    """Returned by App.spawn() — holds the app_id and pod_url."""
+
+    def __init__(self, app_id: str, pod_url: str) -> None:
+        self.app_id = app_id
+        self.pod_url = pod_url
+
+    def __repr__(self) -> str:
+        return f"SpawnInfo(app_id={self.app_id!r}, pod_url={self.pod_url!r})"
+
+
 class App:
     """Base class for a lucent-serverless app.
 
@@ -52,6 +63,26 @@ class App:
 
     def setup(self) -> None:
         """Override to load models. Runs once per pod boot, before serving."""
+
+    @classmethod
+    def spawn(
+        cls,
+        *,
+        controller_url: str | None = None,
+        api_key: str | None = None,
+    ) -> SpawnInfo:
+        """Deploy the app and cold-start a pod in one call.
+
+        Returns a SpawnInfo with the app_id and pod_url.
+        Loads .env automatically for convenience.
+        """
+        from dotenv import load_dotenv
+
+        load_dotenv()
+        app_id = cls.app_id or cls.__name__.lower()
+        deploy(cls, controller_url=controller_url, api_key=api_key)
+        pod_url = resolve(app_id, controller_url=controller_url, api_key=api_key)
+        return SpawnInfo(app_id=app_id, pod_url=pod_url)
 
 
 def realtime(path: str):
@@ -168,4 +199,4 @@ async def connect(app_id: str, path: str = "/realtime", **resolve_kwargs):
         yield ws
 
 
-__all__ = ["App", "realtime", "deploy", "resolve", "connect"]
+__all__ = ["App", "SpawnInfo", "realtime", "deploy", "resolve", "connect"]
