@@ -13,10 +13,11 @@ import argparse
 import importlib.util
 import inspect
 import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .. import App, deploy
+from .. import App, deploy, upload_code
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -57,8 +58,16 @@ def main() -> int:
     args = _parser().parse_args()
 
     cls = _load_app_class(args.file)
+    source_dir = Path(args.file).resolve().parent
+
     try:
         deploy(cls, controller_url=args.controller_url, api_key=args.api_key)
+        upload_code(
+            cls.app_id or cls.__name__.lower(),
+            source_dir,
+            controller_url=args.controller_url,
+            api_key=args.api_key,
+        )
     except (RuntimeError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

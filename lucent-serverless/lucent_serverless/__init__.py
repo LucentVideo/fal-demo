@@ -10,8 +10,11 @@ The user-facing surface:
 
 from __future__ import annotations
 
+import io
 import os
+import tarfile
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 # The controller runs as a persistent CPU pod on RunPod.
 # Override via LUCENT_CONTROLLER_URL env var.
@@ -68,6 +71,7 @@ class App:
     def spawn(
         cls,
         *,
+        source_dir: str | Path | None = None,
         controller_url: str | None = None,
         api_key: str | None = None,
     ) -> SpawnInfo:
@@ -75,12 +79,24 @@ class App:
 
         Returns a SpawnInfo with the app_id and pod_url.
         Loads .env automatically for convenience.
+
+        source_dir: directory containing app code to upload. If None,
+        inferred from the file where the App subclass is defined.
         """
+        import inspect as _inspect
+
         from dotenv import load_dotenv
 
         load_dotenv()
         app_id = cls.app_id or cls.__name__.lower()
         deploy(cls, controller_url=controller_url, api_key=api_key)
+
+        # Upload the app code
+        if source_dir is None:
+            src_file = _inspect.getfile(cls)
+            source_dir = Path(src_file).resolve().parent
+        upload_code(app_id, source_dir, controller_url=controller_url, api_key=api_key)
+
         pod_url = resolve(app_id, controller_url=controller_url, api_key=api_key)
         return SpawnInfo(app_id=app_id, pod_url=pod_url)
 
@@ -129,12 +145,17 @@ def deploy(
 
     import httpx
 
-    if not app_cls.image_ref:
-        raise ValueError(f"{app_cls.__name__}.image_ref is required")
+    # Default to platform base images when user doesn't specify one
+    image_ref = app_cls.image_ref
+    if not image_ref:
+        if app_cls.compute_type == "CPU":
+            image_ref = "raylightdimi/lucent-base-cpu:latest"
+        else:
+            image_ref = "raylightdimi/lucent-base-gpu:latest"
 
     body = {
         "app_id": app_id,
-        "image_ref": app_cls.image_ref,
+        "image_ref": image_ref,
         "compute_type": app_cls.compute_type,
         "machine_type": app_cls.machine_type,
         "cpu_flavor": app_cls.cpu_flavor,
@@ -154,6 +175,49 @@ def deploy(
 
     print(f"deployed {app_id} -> {app_cls.image_ref}")
     print(f"resolve with: ls.resolve({app_id!r})")
+
+
+def _tar_directory(directory: Path) -> bytes:
+    """Create a tar.gz of the directory contents (not the directory itself)."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for item in sorted(directory.iterdir()):
+            # Skip common junk
+            if item.name in {"__pycache__", ".git", ".venv", "node_modules", ".env"}:
+                continue
+            tar.add(item, arcname=item.name)
+    return buf.getvalue()
+
+
+def upload_code(
+    app_id: str,
+    source_dir: str | Path,
+    *,
+    controller_url: str | None = None,
+    api_key: str | None = None,
+) -> None:
+    """Tar up a directory and upload it to the controller as app code."""
+    import httpx
+
+    source = Path(source_dir)
+    if not source.is_dir():
+        raise ValueError(f"{source} is not a directory")
+
+    data = _tar_directory(source)
+    url = _controller_url(controller_url)
+    with httpx.Client(timeout=60.0) as c:
+        resp = c.put(
+            f"{url}/apps/{app_id}/code",
+            content=data,
+            headers={
+                **_headers(api_key),
+                "Content-Type": "application/gzip",
+            },
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"code upload failed ({resp.status_code}): {resp.text}")
+
+    print(f"uploaded {len(data)} bytes of code for {app_id}")
 
 
 def resolve(
@@ -199,4 +263,4 @@ async def connect(app_id: str, path: str = "/realtime", **resolve_kwargs):
         yield ws
 
 
-__all__ = ["App", "SpawnInfo", "realtime", "deploy", "resolve", "connect"]
+__all__ = ["App", "SpawnInfo", "realtime", "deploy", "upload_code", "resolve", "connect"]

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 
@@ -20,6 +21,7 @@ from lucent_serverless.runpod_client import (
 )
 
 from . import db
+from .code_store import CODE_DIR
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +35,13 @@ def spawn_pod(app: dict) -> str:
     """Create a RunPod pod for the given app. Returns the RunPod pod id."""
     env = json.loads(app["env"] or "{}")
     env.setdefault("LUCENT_APP_ID", app["app_id"])
+
+    # If user code has been uploaded, tell the pod where to fetch it
+    code_tar = CODE_DIR / f"{app['app_id']}.tar.gz"
+    if code_tar.exists():
+        controller_url = os.environ.get("LUCENT_CONTROLLER_URL", "")
+        if controller_url:
+            env["LUCENT_CODE_URL"] = f"{controller_url}/apps/{app['app_id']}/code"
 
     spec = PodSpec(
         name=f"lucent-{app['app_id']}",
