@@ -1,7 +1,10 @@
 name: Build lucent-base-gpu
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [feat/custom-serverless]
+    paths:
+      - '.github/workflows/build-lucent-base-gpu.yml'
 
 env:
   IMAGE: raylightdimi/lucent-base-gpu
