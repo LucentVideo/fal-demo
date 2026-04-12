@@ -36,11 +36,14 @@ def spawn_pod(app: dict) -> str:
     env = json.loads(app["env"] or "{}")
     env.setdefault("LUCENT_APP_ID", app["app_id"])
 
-    # If user code has been uploaded, tell the pod where to fetch it
-    code_tar = CODE_DIR / f"{app['app_id']}.tar.gz"
-    if code_tar.exists():
-        controller_url = os.environ.get("LUCENT_CONTROLLER_URL", "")
-        if controller_url:
+    # Tell the pod where the controller is (for wheel + code downloads)
+    controller_url = os.environ.get("LUCENT_CONTROLLER_URL", "")
+    if controller_url:
+        env["LUCENT_CONTROLLER_URL"] = controller_url
+
+        # If user code has been uploaded, tell the pod where to fetch it
+        code_tar = CODE_DIR / f"{app['app_id']}.tar.gz"
+        if code_tar.exists():
             env["LUCENT_CODE_URL"] = f"{controller_url}/apps/{app['app_id']}/code"
 
     spec = PodSpec(
