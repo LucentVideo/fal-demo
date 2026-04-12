@@ -4,6 +4,11 @@ set -e
 # Record boot start
 python3 -c "import time,json; json.dump({'boot_start':time.time()}, open('/tmp/lucent_boot.json','w'))"
 
+# ── Install lucent-serverless runner (always fresh from git) ─────────
+LUCENT_PKG="${LUCENT_PACKAGE_URL:-git+https://github.com/LucentVideo/fal-demo.git@feat/custom-serverless#subdirectory=lucent-serverless}"
+echo "[lucent] installing runner from $LUCENT_PKG"
+uv pip install --system --break-system-packages --no-cache "$LUCENT_PKG"
+
 # ── Download user code ───────────────────────────────────────────────
 if [ -n "$LUCENT_CODE_URL" ]; then
     echo "[lucent] downloading app code from $LUCENT_CODE_URL"

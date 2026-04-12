@@ -24,10 +24,13 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 # Use /opt/app — RunPod mounts /workspace over the image at runtime
 WORKDIR /opt/app
 
-# ── Install lucent-serverless package (runner + SDK) ─────────────────
-COPY pyproject.toml /opt/app/pyproject.toml
-COPY lucent_serverless /opt/app/lucent_serverless
-RUN uv pip install --system --break-system-packages --no-cache .
+# ── Pre-install lucent-serverless dependencies (stable) ──────────────
+RUN uv pip install --system --break-system-packages --no-cache \
+        "fastapi>=0.115,<0.120" \
+        "uvicorn[standard]>=0.32,<0.35" \
+        "websockets>=13,<15" \
+        "httpx>=0.27,<0.30" \
+        "python-dotenv>=1.0,<2.0"
 
 # ── Common heavy ML deps (pre-baked so users don't wait) ─────────────
 # Base image already has: torch, torchvision, torchaudio, numpy
