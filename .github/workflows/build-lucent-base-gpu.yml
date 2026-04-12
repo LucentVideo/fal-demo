@@ -5,6 +5,7 @@ on:
     branches: [feat/custom-serverless]
     paths:
       - '.github/workflows/build-lucent-base-gpu.yml'
+      - 'lucent-serverless/images/gpu/**'
 
 env:
   IMAGE: raylightdimi/lucent-base-gpu
