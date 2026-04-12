@@ -9,11 +9,16 @@ Sequence:
      scheduler can reap idle pods — the worker itself does not self-kill)
   6. uvicorn on :LUCENT_PORT
 
-Lifecycle note: earlier drafts had an in-pod watchdog call os._exit(0) on
-idle. That doesn't work on RunPod — the container restart policy just
-relaunches the runner immediately and the pod burns money in a loop. Pod
-termination is the scheduler's job (Layer 3); the worker only exposes
-state.
+Realtime handlers use the fal-compatible AsyncIterator pattern:
+
+    @realtime("/path")
+    async def handler(self, inputs: AsyncIterator[Input]) -> AsyncIterator[Output]:
+        async for msg in inputs:
+            yield SomeOutput(...)
+
+The runner wraps the raw websocket into async iterators automatically:
+- inputs: each ws.receive_json() is parsed into the Input pydantic model
+- yields: each yielded Output is serialized via .model_dump() and sent as JSON
 """
 
 import importlib
@@ -23,7 +28,9 @@ import logging
 import os
 import sys
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import get_args, get_origin, get_type_hints
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -52,6 +59,46 @@ def find_app_class(module) -> type[App]:
     return candidates[0]
 
 
+def _get_input_model(method):
+    """Extract the pydantic model type from the inputs: AsyncIterator[Model] hint."""
+    try:
+        hints = get_type_hints(method)
+    except Exception:
+        return None
+
+    for param_name, hint in hints.items():
+        if param_name in ("self", "return"):
+            continue
+        origin = get_origin(hint)
+        if origin is AsyncIterator:
+            args = get_args(hint)
+            if args:
+                return args[0]
+    return None
+
+
+async def _ws_input_iterator(ws: WebSocket, input_model):
+    """Wrap a WebSocket into an async iterator that yields parsed pydantic models."""
+    while True:
+        try:
+            raw = await ws.receive_json()
+        except WebSocketDisconnect:
+            return
+
+        if input_model is not None:
+            try:
+                parsed = input_model.model_validate(raw)
+            except Exception:
+                # If it's a RootModel, try validating as the root type
+                try:
+                    parsed = input_model(root=raw) if hasattr(input_model, 'root') else input_model(**raw)
+                except Exception:
+                    parsed = raw
+            yield parsed
+        else:
+            yield raw
+
+
 def register_realtime_routes(api: FastAPI, instance: App) -> int:
     """Mount every @realtime-decorated method on `instance` as a websocket route."""
     found = 0
@@ -61,11 +108,22 @@ def register_realtime_routes(api: FastAPI, instance: App) -> int:
             continue
         log.info("mounting realtime handler %s.%s -> %s", type(instance).__name__, name, path)
 
-        async def endpoint(ws: WebSocket, _handler=method):
+        input_model = _get_input_model(method)
+
+        async def endpoint(ws: WebSocket, _handler=method, _input_model=input_model):
             await ws.accept()
             state.connection_opened()
             try:
-                await _handler(ws)
+                inputs = _ws_input_iterator(ws, _input_model)
+                async for output in _handler(inputs):
+                    if output is None:
+                        continue
+                    if hasattr(output, "model_dump"):
+                        await ws.send_json(output.model_dump())
+                    elif isinstance(output, dict):
+                        await ws.send_json(output)
+                    else:
+                        await ws.send_text(str(output))
             except WebSocketDisconnect:
                 pass
             finally:

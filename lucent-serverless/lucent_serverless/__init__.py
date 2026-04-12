@@ -101,11 +101,18 @@ class App:
         return SpawnInfo(app_id=app_id, pod_url=pod_url)
 
 
-def realtime(path: str):
-    """Mark a method as a websocket endpoint mounted at `path`."""
+def realtime(path: str, *, buffering: int | None = None):
+    """Mark a method as a websocket endpoint mounted at `path`.
+
+    If the decorated method's signature uses AsyncIterator type hints
+    (fal-compatible style), the runner will automatically wrap the raw
+    websocket into async iterators of pydantic models. Otherwise the
+    method receives a raw FastAPI WebSocket.
+    """
 
     def decorator(fn):
         fn._lucent_realtime_path = path
+        fn._lucent_realtime_buffering = buffering
         return fn
 
     return decorator
