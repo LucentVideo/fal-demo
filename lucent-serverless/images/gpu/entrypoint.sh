@@ -5,7 +5,7 @@ set -e
 python3 -c "import time,json; json.dump({'boot_start':time.time()}, open('/tmp/lucent_boot.json','w'))"
 
 # ── Install lucent-serverless runner (always fresh from git) ─────────
-LUCENT_PKG="${LUCENT_PACKAGE_URL:-git+https://github.com/LucentVideo/fal-demo.git@feat/custom-serverless#subdirectory=lucent-serverless}"
+LUCENT_PKG="${LUCENT_PACKAGE_URL:-lucent-serverless @ https://github.com/LucentVideo/fal-demo/archive/feat/custom-serverless.tar.gz#subdirectory=lucent-serverless}"
 echo "[lucent] installing runner from $LUCENT_PKG"
 uv pip install --system --break-system-packages --no-cache "$LUCENT_PKG"
 
