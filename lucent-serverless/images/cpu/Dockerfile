@@ -19,14 +19,11 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-# Pre-install lucent-serverless dependencies (stable, avoids re-download at boot)
-RUN uv pip install --system --no-cache \
-        "fastapi>=0.115,<0.120" \
-        "uvicorn[standard]>=0.32,<0.35" \
-        "websockets>=13,<15" \
-        "httpx>=0.27,<0.30" \
-        "python-dotenv>=1.0,<2.0" \
-        "pydantic>=2.0"
+# Install lucent-serverless (runner + deps) directly from source.
+COPY pyproject.toml /tmp/lucent-src/pyproject.toml
+COPY lucent_serverless /tmp/lucent-src/lucent_serverless
+RUN uv pip install --system --no-cache /tmp/lucent-src \
+    && rm -rf /tmp/lucent-src
 
 # Entrypoint script
 COPY images/cpu/entrypoint.sh /entrypoint.sh

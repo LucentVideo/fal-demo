@@ -4,13 +4,6 @@ set -e
 # Record boot start
 python3 -c "import time,json; json.dump({'boot_start':time.time()}, open('/tmp/lucent_boot.json','w'))"
 
-# ── Install lucent-serverless runner (wheel hosted on controller) ─────
-LUCENT_CONTROLLER="${LUCENT_CONTROLLER_URL:-http://localhost:8000}"
-LUCENT_WHL_URL="${LUCENT_CONTROLLER}/packages/lucent_serverless.whl"
-echo "[lucent] installing runner from $LUCENT_WHL_URL"
-curl -fsSL -o /tmp/lucent_serverless.whl "$LUCENT_WHL_URL"
-uv pip install --system --no-cache /tmp/lucent_serverless.whl
-
 # ── Download user code ───────────────────────────────────────────────
 if [ -n "$LUCENT_CODE_URL" ]; then
     echo "[lucent] downloading app code from $LUCENT_CODE_URL"
