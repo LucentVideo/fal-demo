@@ -35,6 +35,7 @@ resolution-markers = [
 [manifest]
 members = [
     "lucent-serverless",
+    "lucent-serverless-controller",
     "multi-perception-webrtc",
 ]
 
@@ -2063,6 +2064,27 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0,<2.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<0.35" },
     { name = "websockets", specifier = ">=13,<15" },
+]
+
+[[package]]
+name = "lucent-serverless-controller"
+version = "0.1.0"
+source = { editable = "lucent-serverless-controller" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "lucent-serverless" },
+    { name = "python-dotenv" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.115,<0.120" },
+    { name = "httpx", specifier = ">=0.27,<0.30" },
+    { name = "lucent-serverless", editable = "lucent-serverless" },
+    { name = "python-dotenv", specifier = ">=1.0,<2.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<0.35" },
 ]
 
 [[package]]
