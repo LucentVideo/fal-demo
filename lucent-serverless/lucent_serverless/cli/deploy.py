@@ -65,6 +65,7 @@ def main() -> int:
         upload_code(
             cls.app_id or cls.__name__.lower(),
             source_dir,
+            requirements=cls.requirements or None,
             controller_url=args.controller_url,
             api_key=args.api_key,
         )

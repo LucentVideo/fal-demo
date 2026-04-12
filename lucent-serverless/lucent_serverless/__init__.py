@@ -64,6 +64,9 @@ class App:
     container_disk_gb: int = 40
     cloud_type: str = "SECURE"
 
+    # Dependencies — installed at boot (like fal's requirements list)
+    requirements: list[str] = []
+
     def setup(self) -> None:
         """Override to load models. Runs once per pod boot, before serving."""
 
@@ -95,7 +98,11 @@ class App:
         if source_dir is None:
             src_file = _inspect.getfile(cls)
             source_dir = Path(src_file).resolve().parent
-        upload_code(app_id, source_dir, controller_url=controller_url, api_key=api_key)
+        upload_code(
+            app_id, source_dir,
+            requirements=cls.requirements or None,
+            controller_url=controller_url, api_key=api_key,
+        )
 
         pod_url = resolve(app_id, controller_url=controller_url, api_key=api_key)
         return SpawnInfo(app_id=app_id, pod_url=pod_url)
@@ -184,15 +191,31 @@ def deploy(
     print(f"resolve with: ls.resolve({app_id!r})")
 
 
-def _tar_directory(directory: Path) -> bytes:
-    """Create a tar.gz of the directory contents (not the directory itself)."""
+def _tar_directory(directory: Path, requirements: list[str] | None = None) -> bytes:
+    """Create a tar.gz of the directory contents (not the directory itself).
+
+    If requirements is provided, a requirements.txt is generated and
+    injected into the tarball (overriding any existing one).
+    """
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for item in sorted(directory.iterdir()):
             # Skip common junk
             if item.name in {"__pycache__", ".git", ".venv", "node_modules", ".env"}:
                 continue
+            # Skip existing requirements.txt if we're generating one
+            if item.name == "requirements.txt" and requirements:
+                continue
             tar.add(item, arcname=item.name)
+
+        # Inject generated requirements.txt from class attribute
+        if requirements:
+            reqs_content = "\n".join(requirements) + "\n"
+            reqs_bytes = reqs_content.encode()
+            info = tarfile.TarInfo(name="requirements.txt")
+            info.size = len(reqs_bytes)
+            tar.addfile(info, io.BytesIO(reqs_bytes))
+
     return buf.getvalue()
 
 
@@ -200,6 +223,7 @@ def upload_code(
     app_id: str,
     source_dir: str | Path,
     *,
+    requirements: list[str] | None = None,
     controller_url: str | None = None,
     api_key: str | None = None,
 ) -> None:
@@ -210,7 +234,7 @@ def upload_code(
     if not source.is_dir():
         raise ValueError(f"{source} is not a directory")
 
-    data = _tar_directory(source)
+    data = _tar_directory(source, requirements=requirements)
     url = _controller_url(controller_url)
     with httpx.Client(timeout=60.0) as c:
         resp = c.put(
