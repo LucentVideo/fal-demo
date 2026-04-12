@@ -27,8 +27,8 @@ jobs:
           LUCENT_API_KEY: ${{ secrets.LUCENT_API_KEY }}
         run: |
           WHL=$(ls dist/*.whl)
-          echo "Uploading $WHL"
-          curl -fsSL -X PUT \
+          echo "Uploading $WHL to ${LUCENT_CONTROLLER_URL}/packages/lucent_serverless.whl"
+          curl -v -X PUT \
             -H "Authorization: Bearer $LUCENT_API_KEY" \
             -H "Content-Type: application/octet-stream" \
             --data-binary "@$WHL" \
