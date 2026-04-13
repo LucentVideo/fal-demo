@@ -247,15 +247,14 @@ _GPU_PASTE_BACK_GET = None
 def _gpu_paste_back_enabled() -> bool:
     """Toggle for the cupy paste_back path.
 
-    Set ``FAL_GPU_PASTE_BACK=0`` (or ``false`` / ``no`` / ``off``) to force
-    the original insightface CPU code path.  Default is enabled — this is
-    the whole point of the perf branch — but the kill-switch is here so any
-    visual regression in production can be reverted without a redeploy.
+    Default is CPU (the original insightface path). Set
+    ``FAL_GPU_PASTE_BACK=1`` (or ``true`` / ``yes`` / ``on``) to opt into
+    the cupy-backed GPU paste-back.
     """
     import os
 
-    raw = os.environ.get("FAL_GPU_PASTE_BACK", "1").strip().lower()
-    return raw not in ("0", "false", "no", "off", "")
+    raw = os.environ.get("FAL_GPU_PASTE_BACK", "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
 
 
 def _patch_swapper_paste_back_gpu(swapper) -> None:
