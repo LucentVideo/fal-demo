@@ -268,6 +268,9 @@ class MultiPerceptionWebRTC(ls.App):
     # upstream-fal-demos/, etc. that the pod doesn't need.
     include = ["app.py", "core"]
 
+    # Forwarded from the deploying machine's env/.env into every pod.
+    secrets = ["METERED_TURN_SECRET_KEY", "METERED_TURN_LABEL", "HF_TOKEN"]
+
     # ------------------------------------------------------------------
     # setup() — loads models, warms each, creates the shared Room.
     # ------------------------------------------------------------------

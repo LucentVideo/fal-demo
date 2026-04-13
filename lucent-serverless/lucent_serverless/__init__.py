@@ -72,6 +72,12 @@ class App:
     # local_python_modules but also accepts files like 'app.py'.
     include: list[str] = []
 
+    # Env var names the app needs at runtime (e.g. API keys). The CLI and
+    # spawn() load .env and forward any of these that are set — the
+    # controller stores them on the app record and injects them into
+    # every pod it spawns.
+    secrets: list[str] = []
+
     def setup(self) -> None:
         """Override to load models. Runs once per pod boot, before serving."""
 
@@ -135,6 +141,19 @@ def realtime(path: str, *, buffering: int | None = None):
 
 # ── Controller helpers ────────────────────────────────────────────────
 
+def _collect_secrets(app_cls: type[App]) -> dict[str, str]:
+    """Read os.environ for every name in `app_cls.secrets` that is set.
+
+    Missing names are silently skipped — setup() is responsible for
+    validating presence at boot so errors surface in pod logs.
+    """
+    return {
+        name: os.environ[name]
+        for name in getattr(app_cls, "secrets", []) or []
+        if os.environ.get(name)
+    }
+
+
 def _headers(api_key: str | None = None) -> dict[str, str]:
     key = api_key or os.environ.get("LUCENT_API_KEY", "")
     if key:
@@ -163,8 +182,13 @@ def deploy(
 
     Reads all configuration from class attributes. Call this once
     (or on every deploy) — it upserts, so re-running is safe.
+
+    Any env var name listed in ``app_cls.secrets`` that is set in the
+    local environment is forwarded to the controller automatically.
+    Explicit ``env=`` values take precedence over collected secrets.
     """
     app_id = app_cls.app_id or app_cls.__name__.lower()
+    merged_env = {**_collect_secrets(app_cls), **(env or {})}
 
     import httpx
 
@@ -188,7 +212,7 @@ def deploy(
         "keep_alive_sec": app_cls.keep_alive,
         "container_disk_gb": app_cls.container_disk_gb,
         "cloud_type": app_cls.cloud_type,
-        "env": env or {},
+        "env": merged_env,
     }
 
     url = _controller_url(controller_url)
@@ -198,6 +222,14 @@ def deploy(
         raise RuntimeError(f"deploy failed ({resp.status_code}): {resp.text}")
 
     print(f"deployed {app_id} -> {image_ref}")
+    if merged_env:
+        print(f"forwarded secrets: {sorted(merged_env.keys())}")
+    missing = [
+        name for name in getattr(app_cls, "secrets", []) or []
+        if name not in merged_env
+    ]
+    if missing:
+        print(f"warning: declared secrets not set in local env: {missing}")
     print(f"resolve with: ls.resolve({app_id!r})")
 
 
