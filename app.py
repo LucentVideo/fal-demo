@@ -266,7 +266,7 @@ class MultiPerceptionWebRTC(ls.App):
 
     # Only ship these — the repo root has frontend/, gfpgan/ weights,
     # upstream-fal-demos/, etc. that the pod doesn't need.
-    include = ["app.py", "core"]
+    include = ["app.py", "core", "benchmark_faceswap.py"]
 
     # Forwarded from the deploying machine's env/.env into every pod.
     secrets = ["METERED_TURN_SECRET_KEY", "METERED_TURN_LABEL", "HF_TOKEN"]
