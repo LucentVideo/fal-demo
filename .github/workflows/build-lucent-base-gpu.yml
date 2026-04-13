@@ -1,12 +1,16 @@
-name: Docker publish (lucent-echo)
+name: Build lucent-base-gpu
 
 on:
   push:
-    branches: [feat/custom-serverless]
-  workflow_dispatch:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-lucent-base-gpu.yml'
+      - 'lucent-serverless/images/gpu/**'
+      - 'lucent-serverless/lucent_serverless/**'
+      - 'lucent-serverless/pyproject.toml'
 
 env:
-  IMAGE: raylightdimi/lucent-echo
+  IMAGE: raylightdimi/lucent-base-gpu
 
 jobs:
   build-push:
@@ -16,6 +20,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h /
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -29,10 +38,10 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: lucent-serverless
-          file: lucent-serverless/examples/echo/Dockerfile
+          context: ./lucent-serverless
+          file: ./lucent-serverless/images/gpu/Dockerfile
           push: true
           platforms: linux/amd64
           tags: ${{ env.IMAGE }}:latest
-          cache-from: type=gha,scope=lucent-echo
-          cache-to: type=gha,mode=max,scope=lucent-echo
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -24,6 +24,7 @@ _current_job_id: str | None = None
 # Shared
 _last_activity_at = time.time()
 _started_at = time.time()
+_boot_timings: dict | None = None
 
 
 # ── Realtime mode ─────────────────────────────────────────────────────
@@ -42,14 +43,22 @@ def connection_closed() -> None:
         _last_activity_at = time.time()
 
 
+def set_boot_timings(timings: dict) -> None:
+    global _boot_timings
+    with _lock:
+        _boot_timings = timings
+
+
 def snapshot() -> dict:
     with _lock:
-        return {
+        d = {
             "active_connections": _active_connections,
             "last_activity_at": int(_last_activity_at),
             "started_at": int(_started_at),
         }
-
+        if _boot_timings:
+            d["boot_timings"] = _boot_timings
+        return d
 
 # ── Job mode ──────────────────────────────────────────────────────────
 

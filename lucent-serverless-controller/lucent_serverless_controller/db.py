@@ -84,6 +84,24 @@ def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_jobs_app_status
             ON jobs(app_id, status, created_at);
+        CREATE TABLE IF NOT EXISTS pod_history (
+            pod_id          TEXT PRIMARY KEY,
+            app_id          TEXT NOT NULL,
+            created_at      INTEGER NOT NULL,
+            boot_start      REAL,
+            code_downloaded REAL,
+            deps_installed  REAL,
+            setup_start     REAL,
+            setup_done      REAL,
+            ready_at        REAL,
+            total_boot_sec      REAL,
+            total_cold_start_sec REAL,
+            terminated_at   INTEGER,
+            status          TEXT NOT NULL DEFAULT 'pending'
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pod_history_app
+            ON pod_history(app_id, created_at DESC);
     """)
     conn.commit()
 
@@ -145,9 +163,17 @@ def upsert_app(
 
 
 def delete_app(app_id: str) -> bool:
+    """Delete the app and cascade-delete its pod rows.
+
+    Caller is responsible for terminating any live RunPod pods before
+    this call — we only clean up local state. pod_history is kept as
+    a historical record (it has no FK to apps).
+    """
     with _write_lock:
-        cur = _conn().execute("DELETE FROM apps WHERE app_id = ?", (app_id,))
-        _conn().commit()
+        conn = _conn()
+        conn.execute("DELETE FROM pods WHERE app_id = ?", (app_id,))
+        cur = conn.execute("DELETE FROM apps WHERE app_id = ?", (app_id,))
+        conn.commit()
         return cur.rowcount > 0
 
 
@@ -259,6 +285,13 @@ def insert_job(
                (job_id, app_id, status, input, webhook_url, created_at, ttl_sec)
                VALUES (?, ?, 'pending', ?, ?, ?, ?)""",
             (job_id, app_id, input_json, webhook_url, now, ttl_sec),
+# ── Pod history ──────────────────────���───────────────────────────────
+
+def insert_pod_history(pod_id: str, app_id: str) -> None:
+    with _write_lock:
+        _conn().execute(
+            "INSERT OR IGNORE INTO pod_history (pod_id, app_id, created_at, status) VALUES (?, ?, ?, 'pending')",
+            (pod_id, app_id, int(time.time())),
         )
         _conn().commit()
 
@@ -313,6 +346,34 @@ def fail_job(job_id: str, error_str: str) -> None:
             """UPDATE jobs SET status = 'failed', error = ?, completed_at = ?
                WHERE job_id = ?""",
             (error_str, int(time.time()), job_id),
+def update_pod_boot_timings(pod_id: str, timings: dict) -> None:
+    with _write_lock:
+        ready_at = timings.get("ready_at")
+        # Compute full cold start: created_at → ready_at (includes RunPod overhead)
+        row = _conn().execute(
+            "SELECT created_at FROM pod_history WHERE pod_id = ?", (pod_id,)
+        ).fetchone()
+        total_cold_start = None
+        if row and ready_at:
+            total_cold_start = round(ready_at - row["created_at"], 2)
+
+        _conn().execute(
+            """UPDATE pod_history SET
+                   boot_start = ?, code_downloaded = ?, deps_installed = ?,
+                   setup_start = ?, setup_done = ?, ready_at = ?,
+                   total_boot_sec = ?, total_cold_start_sec = ?, status = 'ready'
+               WHERE pod_id = ? AND ready_at IS NULL""",
+            (
+                timings.get("boot_start"),
+                timings.get("code_downloaded"),
+                timings.get("deps_installed"),
+                timings.get("setup_start"),
+                timings.get("setup_done"),
+                ready_at,
+                timings.get("total_sec"),
+                total_cold_start,
+                pod_id,
+            ),
         )
         _conn().commit()
 
@@ -354,4 +415,36 @@ def expire_stale_jobs() -> int:
 def recent_jobs(limit: int = 50) -> list[sqlite3.Row]:
     return _conn().execute(
         "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
+def boot_timings_recorded(pod_id: str) -> bool:
+    row = _conn().execute(
+        "SELECT 1 FROM pod_history WHERE pod_id = ? AND ready_at IS NOT NULL", (pod_id,)
+    ).fetchone()
+    return row is not None
+
+
+def set_pod_history_status(pod_id: str, status: str) -> None:
+    now = int(time.time())
+    with _write_lock:
+        if status in ("dead", "terminated"):
+            _conn().execute(
+                "UPDATE pod_history SET status = ?, terminated_at = ? WHERE pod_id = ?",
+                (status, now, pod_id),
+            )
+        else:
+            _conn().execute(
+                "UPDATE pod_history SET status = ? WHERE pod_id = ?",
+                (status, pod_id),
+            )
+        _conn().commit()
+
+
+def list_pod_history(app_id: str | None = None, limit: int = 50) -> list[sqlite3.Row]:
+    if app_id:
+        return _conn().execute(
+            "SELECT * FROM pod_history WHERE app_id = ? ORDER BY created_at DESC LIMIT ?",
+            (app_id, limit),
+        ).fetchall()
+    return _conn().execute(
+        "SELECT * FROM pod_history ORDER BY created_at DESC LIMIT ?",
+        (limit,),
     ).fetchall()

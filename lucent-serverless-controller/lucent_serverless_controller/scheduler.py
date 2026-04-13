@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 
@@ -21,11 +22,18 @@ from lucent_serverless.runpod_client import (
 )
 
 from . import db
+from .code_store import CODE_DIR
 
 log = logging.getLogger(__name__)
 
 POLL_INTERVAL = 5
-MAX_FAILED_POLLS = 5
+
+# Before marking dead we wait much longer: GPU apps can take several
+# minutes to boot (deps install + model downloads + setup warmup). During
+# this boot grace window we ignore /health failures. After grace, a
+# smaller threshold catches actually-unhealthy pods.
+BOOT_GRACE_SEC = 600  # 10 minutes
+MAX_FAILED_POLLS_AFTER_GRACE = 5
 
 
 # ── Spawn ─────────────────────────────────────────────────────────────
@@ -34,6 +42,16 @@ def spawn_pod(app: dict) -> str:
     """Create a RunPod pod for the given app. Returns the RunPod pod id."""
     env = json.loads(app["env"] or "{}")
     env.setdefault("LUCENT_APP_ID", app["app_id"])
+
+    # Tell the pod where the controller is (for wheel + code downloads)
+    controller_url = os.environ.get("LUCENT_CONTROLLER_URL", "")
+    if controller_url:
+        env["LUCENT_CONTROLLER_URL"] = controller_url
+
+        # If user code has been uploaded, tell the pod where to fetch it
+        code_tar = CODE_DIR / f"{app['app_id']}.tar.gz"
+        if code_tar.exists():
+            env["LUCENT_CODE_URL"] = f"{controller_url}/apps/{app['app_id']}/code"
 
     spec = PodSpec(
         name=f"lucent-{app['app_id']}",
@@ -57,6 +75,7 @@ def spawn_pod(app: dict) -> str:
     url = pod_proxy_url(pod_id)
 
     db.insert_pod(pod_id, app["app_id"], url)
+    db.insert_pod_history(pod_id, app["app_id"])
     log.info("spawned pod %s for app %s", pod_id, app["app_id"])
     return pod_id
 
@@ -67,23 +86,36 @@ def _poll_pod(pod: dict) -> None:
     """Poll a single pod's /health and update the DB."""
     url = pod["url"] or pod_proxy_url(pod["pod_id"])
 
+    age = int(time.time()) - pod["started_at"]
+    in_grace = age < BOOT_GRACE_SEC
+
+    def _maybe_mark_dead(reason: str) -> None:
+        failed = db.increment_failed_polls(pod["pod_id"])
+        if in_grace:
+            # Still booting — don't kill. Log every 10 failed polls so
+            # we can see it in the controller logs if it gets stuck.
+            if failed % 10 == 0:
+                log.info(
+                    "pod %s still booting (%ds old, %d failed polls, %s)",
+                    pod["pod_id"], age, failed, reason,
+                )
+            return
+        if failed >= MAX_FAILED_POLLS_AFTER_GRACE:
+            log.warning(
+                "pod %s %s after grace period (%d polls), marking dead",
+                pod["pod_id"], reason, failed,
+            )
+            db.set_pod_status(pod["pod_id"], "dead")
+
     try:
         with httpx.Client(timeout=5.0) as c:
             resp = c.get(f"{url}/health")
     except httpx.HTTPError:
-        failed = db.increment_failed_polls(pod["pod_id"])
-        if failed >= MAX_FAILED_POLLS:
-            log.warning("pod %s unreachable (%d polls), marking dead",
-                        pod["pod_id"], failed)
-            db.set_pod_status(pod["pod_id"], "dead")
+        _maybe_mark_dead("unreachable")
         return
 
     if resp.status_code != 200:
-        failed = db.increment_failed_polls(pod["pod_id"])
-        if failed >= MAX_FAILED_POLLS:
-            log.warning("pod %s unhealthy (%d polls), marking dead",
-                        pod["pod_id"], failed)
-            db.set_pod_status(pod["pod_id"], "dead")
+        _maybe_mark_dead(f"unhealthy ({resp.status_code})")
         return
 
     data = resp.json()
@@ -95,6 +127,13 @@ def _poll_pod(pod: dict) -> None:
     if pod["status"] == "pending":
         db.promote_pod(pod["pod_id"], url)
         log.info("pod %s promoted to ready", pod["pod_id"])
+
+    # Record boot timings into pod_history (once per pod)
+    boot_timings = data.get("boot_timings")
+    if boot_timings and not db.boot_timings_recorded(pod["pod_id"]):
+        db.update_pod_boot_timings(pod["pod_id"], boot_timings)
+        log.info("recorded boot timings for %s/%s: %.2fs",
+                 pod["app_id"], pod["pod_id"], boot_timings.get("total_sec", 0))
 
 
 # ── Loop ──────────────────────────────────────────────────────────────

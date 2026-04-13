@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
@@ -27,6 +28,7 @@ DASHBOARD_HTML = (Path(__file__).parent / "dashboard.html").read_text()
 
 from . import db
 from .jobs import router as jobs_router
+from .code_store import CODE_DIR, code_router
 from .reaper import reaper_loop
 from .resolver import router
 from .scheduler import scheduler_loop
@@ -37,6 +39,7 @@ log = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     db.init_db()
+    CODE_DIR.mkdir(parents=True, exist_ok=True)
     stop = threading.Event()
 
     sched = threading.Thread(
@@ -60,12 +63,31 @@ async def lifespan(_app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="lucent-serverless-controller", lifespan=lifespan)
 
-    # Auth: exempt /health (RunPod probe) and /dashboard (has its own login)
-    PUBLIC_PATHS = {"/health", "/dashboard"}
+    # Browser clients resolve pod URLs directly from the controller, so CORS
+    # has to be open. For the demo we allow all origins; tighten for prod.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
+    )
+
+    # Auth: exempt /health (RunPod probe), /dashboard (has its own login),
+    # and /resolve (public for the demo — any client can cold-start an app).
+    PUBLIC_PATHS = {"/health", "/dashboard", "/resolve"}
+    PUBLIC_PREFIXES = ("/apps/",)  # GET /apps/{id}/code — pods fetch without API key
+
+    def _is_public(path: str, method: str) -> bool:
+        if path in PUBLIC_PATHS:
+            return True
+        # Allow GET on code download (pods don't have API keys)
+        if method == "GET" and any(path.startswith(p) for p in PUBLIC_PREFIXES) and path.endswith("/code"):
+            return True
+        return False
 
     @app.middleware("http")
     async def check_api_key(request: Request, call_next):
-        if request.url.path in PUBLIC_PATHS:
+        if _is_public(request.url.path, request.method):
             return await call_next(request)
         expected = os.environ.get("LUCENT_API_KEY")
         if expected:
@@ -87,6 +109,7 @@ def create_app() -> FastAPI:
 
     app.include_router(router)
     app.include_router(jobs_router)
+    app.include_router(code_router)
     return app
 
 
