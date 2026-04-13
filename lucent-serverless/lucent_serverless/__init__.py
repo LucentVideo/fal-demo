@@ -1,11 +1,21 @@
-"""lucent-serverless: a small serverless realtime platform.
+"""lucent-serverless: a small serverless platform.
 
 The user-facing surface:
-  - App: base class — subclass it, set attributes, override setup()
+
+Realtime path:
   - @realtime(path): decorator to mark websocket handlers
-  - deploy(AppClass): register your app with the controller
   - resolve(app_id): get a pod URL (cold-starts if needed)
   - connect(app_id, path): resolve + open websocket in one call
+
+Job path:
+  - @handler: decorator to mark the job handler method
+  - submit(app_id, input): enqueue a job, returns job_id
+  - poll(job_id): check job status and retrieve result
+  - run_sync(app_id, input): submit + block until done
+
+Common:
+  - App: base class — subclass it, set attributes, override setup()
+  - deploy(AppClass): register your app with the controller
 """
 
 from __future__ import annotations
@@ -39,8 +49,8 @@ class App:
     """Base class for a lucent-serverless app.
 
     Subclass this, set the class attributes you care about, override
-    `setup()` to load models, and decorate one or more methods with
-    `@realtime("/path")`.
+    `setup()` to load models, and decorate methods with `@realtime`
+    (for websocket apps) or `@handler` (for job-based apps).
     """
 
     # Identity
@@ -48,6 +58,9 @@ class App:
 
     # Image
     image_ref: str = ""
+
+    # Mode: "realtime" (websocket) or "job" (queue-based)
+    mode: str = "realtime"
 
     # Compute
     compute_type: str = "GPU"
@@ -139,6 +152,12 @@ def realtime(path: str, *, buffering: int | None = None):
     return decorator
 
 
+def handler(fn):
+    """Mark a method as the job handler for this app."""
+    fn._lucent_handler = True
+    return fn
+
+
 # ── Controller helpers ────────────────────────────────────────────────
 
 def _collect_secrets(app_cls: type[App]) -> dict[str, str]:
@@ -212,6 +231,7 @@ def deploy(
         "keep_alive_sec": app_cls.keep_alive,
         "container_disk_gb": app_cls.container_disk_gb,
         "cloud_type": app_cls.cloud_type,
+        "mode": app_cls.mode,
         "env": merged_env,
     }
 
@@ -377,4 +397,76 @@ async def connect(app_id: str, path: str = "/realtime", **resolve_kwargs):
         yield ws
 
 
-__all__ = ["App", "SpawnInfo", "realtime", "deploy", "upload_code", "resolve", "connect"]
+# ── Job client helpers ────────────────────────────────────────────────
+
+def submit(
+    app_id: str,
+    input: dict,
+    *,
+    webhook_url: str | None = None,
+    ttl_sec: int = 300,
+    controller_url: str | None = None,
+    api_key: str | None = None,
+) -> str:
+    """Enqueue a job for a job-mode app. Returns the job_id."""
+    import httpx
+
+    url = _controller_url(controller_url)
+    body = {"app_id": app_id, "input": input, "ttl_sec": ttl_sec}
+    if webhook_url:
+        body["webhook_url"] = webhook_url
+
+    with httpx.Client(timeout=30.0) as c:
+        resp = c.post(f"{url}/run", json=body, headers=_headers(api_key))
+    if resp.status_code != 200:
+        raise RuntimeError(f"submit failed ({resp.status_code}): {resp.text}")
+    return resp.json()["job_id"]
+
+
+def poll(
+    job_id: str,
+    *,
+    controller_url: str | None = None,
+    api_key: str | None = None,
+) -> dict:
+    """Check the status of a job. Returns the full job dict."""
+    import httpx
+
+    url = _controller_url(controller_url)
+    with httpx.Client(timeout=30.0) as c:
+        resp = c.get(f"{url}/status/{job_id}", headers=_headers(api_key))
+    if resp.status_code != 200:
+        raise RuntimeError(f"poll failed ({resp.status_code}): {resp.text}")
+    return resp.json()
+
+
+def run_sync(
+    app_id: str,
+    input: dict,
+    *,
+    timeout: int = 120,
+    controller_url: str | None = None,
+    api_key: str | None = None,
+) -> dict:
+    """Submit a job and block until it completes. Returns the result."""
+    import httpx
+
+    url = _controller_url(controller_url)
+    body = {"app_id": app_id, "input": input, "ttl_sec": timeout}
+
+    with httpx.Client(timeout=float(timeout) + 10) as c:
+        resp = c.post(f"{url}/runsync", json=body, headers=_headers(api_key))
+    if resp.status_code == 408:
+        raise TimeoutError(f"job did not complete within {timeout}s")
+    if resp.status_code != 200:
+        raise RuntimeError(f"run_sync failed ({resp.status_code}): {resp.text}")
+    return resp.json()
+
+
+__all__ = [
+    "App", "SpawnInfo",
+    "realtime", "handler",
+    "deploy", "upload_code",
+    "resolve", "connect",
+    "submit", "poll", "run_sync",
+]

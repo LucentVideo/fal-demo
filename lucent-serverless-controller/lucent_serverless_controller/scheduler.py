@@ -1,4 +1,5 @@
-"""Scheduler loop: spawn pods for min_concurrency, poll /health on live pods.
+"""Scheduler loop: spawn pods for min_concurrency, scale up for queued
+jobs, poll /health on live pods, and expire stale jobs.
 
 Runs in its own thread, started by the lifespan in main.py.
 """
@@ -138,22 +139,43 @@ def _poll_pod(pod: dict) -> None:
 # ── Loop ──────────────────────────────────────────────────────────────
 
 def _tick() -> None:
-    # 1. Ensure min_concurrency for each app
     for app in db.list_apps():
-        warm = db.pods_by_app_and_status(
-            app["app_id"], ["pending", "ready"]
-        )
+        app_dict = dict(app)
+        warm = db.pods_by_app_and_status(app["app_id"], ["pending", "ready"])
+
+        # 1. Ensure min_concurrency for every app (realtime and job)
         deficit = app["min_concurrency"] - len(warm)
         for _ in range(deficit):
             try:
-                spawn_pod(dict(app))
+                spawn_pod(app_dict)
             except RunpodError as e:
                 log.error("failed to spawn for %s: %s", app["app_id"], e)
                 break
 
-    # 2. Health-poll every live pod
+        # 2. For job-mode apps, scale up if there are pending jobs
+        if app["mode"] == "job":
+            pending = db.pending_job_count(app["app_id"])
+            if pending > 0:
+                idle_workers = sum(
+                    1 for p in warm
+                    if p["status"] == "ready" and p["active_connections"] == 0
+                )
+                needed = min(pending - idle_workers, app["max_concurrency"] - len(warm))
+                for _ in range(max(0, needed)):
+                    try:
+                        spawn_pod(app_dict)
+                    except RunpodError as e:
+                        log.error("failed to scale up for %s: %s", app["app_id"], e)
+                        break
+
+    # 3. Health-poll every live pod
     for pod in db.live_pods():
         _poll_pod(dict(pod))
+
+    # 4. Expire stale running jobs past their TTL
+    expired = db.expire_stale_jobs()
+    if expired:
+        log.info("expired %d stale jobs", expired)
 
 
 def scheduler_loop(stop: threading.Event) -> None:

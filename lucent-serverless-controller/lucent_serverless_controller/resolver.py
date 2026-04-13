@@ -94,10 +94,13 @@ class AppRegistration(BaseModel):
     container_disk_gb: int = 40
     cloud_type: str = "SECURE"
     env: dict[str, str] | None = None
+    mode: str = "realtime"
 
 
 @router.post("/apps")
 def register_app(body: AppRegistration):
+    if body.mode not in ("realtime", "job"):
+        raise HTTPException(400, f"mode must be 'realtime' or 'job', got {body.mode!r}")
     db.upsert_app(
         body.app_id,
         body.image_ref,
@@ -111,8 +114,9 @@ def register_app(body: AppRegistration):
         container_disk_gb=body.container_disk_gb,
         cloud_type=body.cloud_type,
         env=body.env,
+        mode=body.mode,
     )
-    log.info("registered app %s -> %s", body.app_id, body.image_ref)
+    log.info("registered app %s -> %s (mode=%s)", body.app_id, body.image_ref, body.mode)
     return {"ok": True, "app_id": body.app_id}
 
 
