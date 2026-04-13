@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from lucent_serverless.runpod_client import (
     RunpodError,
     pod_proxy_url,
+    terminate_pod,
 )
 
 from . import db
@@ -114,9 +115,25 @@ def get_app(app_id: str):
 
 @router.delete("/apps/{app_id}")
 def remove_app(app_id: str):
+    # Terminate any live RunPod pods first so we don't leak compute.
+    live = db.pods_by_app_and_status(app_id, ["pending", "ready"])
+    terminated: list[str] = []
+    failed: list[str] = []
+    for pod in live:
+        try:
+            terminate_pod(pod["pod_id"])
+            terminated.append(pod["pod_id"])
+        except RunpodError as e:
+            log.warning("failed to terminate pod %s: %s", pod["pod_id"], e)
+            failed.append(pod["pod_id"])
+
     if not db.delete_app(app_id):
         raise HTTPException(404, f"unknown app_id {app_id!r}")
-    return {"ok": True}
+    log.info(
+        "deleted app %s (terminated=%d, failed=%d)",
+        app_id, len(terminated), len(failed),
+    )
+    return {"ok": True, "terminated": terminated, "failed_to_terminate": failed}
 
 
 # ── Pod visibility ────────────────────────────────────────────────────

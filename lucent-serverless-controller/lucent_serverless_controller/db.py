@@ -146,9 +146,17 @@ def upsert_app(
 
 
 def delete_app(app_id: str) -> bool:
+    """Delete the app and cascade-delete its pod rows.
+
+    Caller is responsible for terminating any live RunPod pods before
+    this call — we only clean up local state. pod_history is kept as
+    a historical record (it has no FK to apps).
+    """
     with _write_lock:
-        cur = _conn().execute("DELETE FROM apps WHERE app_id = ?", (app_id,))
-        _conn().commit()
+        conn = _conn()
+        conn.execute("DELETE FROM pods WHERE app_id = ?", (app_id,))
+        cur = conn.execute("DELETE FROM apps WHERE app_id = ?", (app_id,))
+        conn.commit()
         return cur.rowcount > 0
 
 
