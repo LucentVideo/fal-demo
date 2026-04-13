@@ -462,7 +462,8 @@ function timeAgo(unix) {
 function truncate(str, len) {
   if (!str) return '-';
   return str.length > len ? str.substring(0, len) + '...' : str;
-  
+}
+
 function buildTimingBar(h) {
   const total = h.total_cold_start_sec;
   if (!total || total <= 0) return '<span class="mono">-</span>';
