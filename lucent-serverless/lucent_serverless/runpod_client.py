@@ -64,6 +64,7 @@ class PodSpec:
     env: dict[str, str] = field(default_factory=dict)
     cloud_type: str = "SECURE"
     interruptible: bool = False
+    registry_auth_id: str | None = None
 
 
 def _require_api_key() -> str:
@@ -111,6 +112,8 @@ def create_pod(spec: PodSpec) -> dict:
         "ports": spec.ports,
         "env": spec.env,
     }
+    if spec.registry_auth_id:
+        body["containerRegistryAuthId"] = spec.registry_auth_id
     if spec.compute_type == "GPU":
         body["gpuTypeIds"] = spec.gpu_type_ids
         body["gpuCount"] = spec.gpu_count

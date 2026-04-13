@@ -68,6 +68,7 @@ def spawn_pod(app: dict) -> str:
         cloud_type=app["cloud_type"],
         ports=["8000/http"],
         env=env,
+        registry_auth_id=os.environ.get("RUNPOD_REGISTRY_AUTH_ID") or None,
     )
 
     pod = create_pod(spec)
