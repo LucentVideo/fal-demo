@@ -266,7 +266,10 @@ class MultiPerceptionWebRTC(ls.App):
 
     # Only ship these — the repo root has frontend/, gfpgan/ weights,
     # upstream-fal-demos/, etc. that the pod doesn't need.
-    include = ["app.py", "core"]
+    include = ["app.py", "core", "benchmark_faceswap.py"]
+
+    # Forwarded from the deploying machine's env/.env into every pod.
+    secrets = ["METERED_TURN_SECRET_KEY", "METERED_TURN_LABEL", "HF_TOKEN"]
 
     # ------------------------------------------------------------------
     # setup() — loads models, warms each, creates the shared Room.
@@ -491,13 +494,23 @@ class MultiPerceptionWebRTC(ls.App):
                 sub = self.room.broadcaster.subscribe()
                 subscriber_ref["sub"] = sub
                 broadcast_track = create_broadcast_track(sub)
-                transceiver = pc.addTrack(broadcast_track)
+                # addTrack reuses the transceiver that setRemoteDescription
+                # already created for the inbound video m-line — flipping
+                # its direction to sendrecv. Creating a new transceiver
+                # here adds a second m-line the browser didn't offer,
+                # which breaks the answer.
+                sender = pc.addTrack(broadcast_track)
+                transceiver = next(
+                    (t for t in pc.getTransceivers() if t.sender is sender),
+                    None,
+                )
                 # Prefer H264 for higher quality ceiling (3 Mbps vs VP8's 1.5 Mbps)
                 try:
                     h264_codec = RTCRtpCodecCapability(
                         mimeType="video/H264", clockRate=90000
                     )
-                    transceiver.setCodecPreferences([h264_codec])
+                    if transceiver is not None:
+                        transceiver.setCodecPreferences([h264_codec])
                 except Exception as e:
                     log.warning(f"Could not set H264 preference: {e}")
                 log.info(f"app: on_track peer={peer_id} — subscribed to broadcaster, broadcast_track added to PC")
