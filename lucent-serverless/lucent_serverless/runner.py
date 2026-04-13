@@ -110,26 +110,33 @@ def register_realtime_routes(api: FastAPI, instance: App) -> int:
 
         input_model = _get_input_model(method)
 
-        async def endpoint(ws: WebSocket, _handler=method, _input_model=input_model):
-            await ws.accept()
-            state.connection_opened()
-            try:
-                inputs = _ws_input_iterator(ws, _input_model)
-                async for output in _handler(inputs):
-                    if output is None:
-                        continue
-                    if hasattr(output, "model_dump"):
-                        await ws.send_json(output.model_dump())
-                    elif isinstance(output, dict):
-                        await ws.send_json(output)
-                    else:
-                        await ws.send_text(str(output))
-            except WebSocketDisconnect:
-                pass
-            finally:
-                state.connection_closed()
+        def _make_endpoint(_handler, _input_model):
+            # Close over handler/input_model instead of using default args:
+            # FastAPI treats default-valued endpoint params as query params
+            # and deepcopies their defaults on every request. A bound method
+            # default drags the whole App instance (locks, models) through
+            # deepcopy, which blows up with "cannot pickle _thread.lock".
+            async def endpoint(ws: WebSocket):
+                await ws.accept()
+                state.connection_opened()
+                try:
+                    inputs = _ws_input_iterator(ws, _input_model)
+                    async for output in _handler(inputs):
+                        if output is None:
+                            continue
+                        if hasattr(output, "model_dump"):
+                            await ws.send_json(output.model_dump())
+                        elif isinstance(output, dict):
+                            await ws.send_json(output)
+                        else:
+                            await ws.send_text(str(output))
+                except WebSocketDisconnect:
+                    pass
+                finally:
+                    state.connection_closed()
+            return endpoint
 
-        api.add_api_websocket_route(path, endpoint)
+        api.add_api_websocket_route(path, _make_endpoint(method, input_model))
         found += 1
 
     if found == 0:

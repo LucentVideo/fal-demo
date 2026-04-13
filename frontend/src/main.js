@@ -10,6 +10,11 @@ const _autoWsUrl = () => {
 };
 const ENV_BACKEND_URL = import.meta.env.VITE_BACKEND_URL || _autoWsUrl();
 const ENV_LOCAL_MODE = import.meta.env.VITE_LOCAL_MODE === "true";
+// Stable lucent controller URL (https://). When set, the frontend asks the
+// controller to resolve the current pod for this app_id instead of going
+// through fal. Pod URLs change per cold-start, but the controller URL
+// doesn't — so this env var is safe to bake into the build.
+const ENV_LUCENT_CONTROLLER_URL = import.meta.env.VITE_LUCENT_CONTROLLER_URL || "";
 
 const localModeCheckbox = document.getElementById("localMode");
 const backendUrlInput = document.getElementById("backendUrl");
@@ -52,6 +57,11 @@ const debugSection = document.getElementById("debugSection");
 const debugToggle = document.getElementById("debugToggle");
 const shuffleFlash = document.getElementById("shuffleFlash");
 const joinOverlay = document.getElementById("joinOverlay");
+const joinLoadingEl = document.getElementById("joinLoading");
+const loadingStageEl = document.getElementById("loadingStage");
+const loadingHintEl = document.getElementById("loadingHint");
+const videoLoadingEl = document.getElementById("videoLoading");
+const videoLoadingStageEl = document.getElementById("videoLoadingStage");
 
 let ws = null;
 let pc = null;
@@ -85,11 +95,84 @@ const setStatus = (text) => {
   statusEl.textContent = text;
 };
 
+// ---- Loading UI ----
+// showJoinLoading() swaps the Join button out for a spinner + staged status.
+// showVideoLoading() covers the video stage after the overlay hides, until
+// the first remote frame arrives. Both hide via clearLoading().
+const showJoinLoading = (stage, hint = "") => {
+  startBtn.hidden = true;
+  joinLoadingEl.hidden = false;
+  loadingStageEl.textContent = stage;
+  loadingHintEl.textContent = hint;
+};
+
+const updateJoinLoading = (stage, hint) => {
+  if (joinLoadingEl.hidden) return;
+  if (stage !== undefined) loadingStageEl.textContent = stage;
+  if (hint !== undefined) loadingHintEl.textContent = hint;
+};
+
+const showVideoLoading = (stage) => {
+  videoLoadingEl.hidden = false;
+  if (stage) videoLoadingStageEl.textContent = stage;
+};
+
+const updateVideoLoading = (stage) => {
+  if (!videoLoadingEl.hidden && stage) videoLoadingStageEl.textContent = stage;
+};
+
+const clearLoading = () => {
+  startBtn.hidden = false;
+  joinLoadingEl.hidden = true;
+  loadingStageEl.textContent = "";
+  loadingHintEl.textContent = "";
+  videoLoadingEl.hidden = true;
+};
+
 const normalizeAppId = (value) => value.replace(/^\/+|\/+$/g, "");
 
 const buildWsUrl = (appId, token) => {
   const normalizedAppId = normalizeAppId(appId);
   return `wss://fal.run/${normalizedAppId}?fal_jwt_token=${encodeURIComponent(token)}`;
+};
+
+const resolveLucentPodWsUrl = async (appId) => {
+  const base = ENV_LUCENT_CONTROLLER_URL.replace(/\/+$/, "");
+  const startedAt = performance.now();
+  const deadline = startedAt + 600_000; // 10 min
+  let lastStatus = null;
+  while (true) {
+    const resp = await fetch(
+      `${base}/resolve?app_id=${encodeURIComponent(appId)}`,
+      { method: "GET" },
+    );
+    if (!resp.ok) {
+      const body = await resp.text();
+      throw new Error(`resolve failed (${resp.status}): ${body}`);
+    }
+    const data = await resp.json();
+    const status = data.status || "ready";
+    if (status === "ready") {
+      const podUrl = data.pod_url.replace(/^https:/, "wss:").replace(/^http:/, "ws:");
+      log(`resolved pod ${data.pod_id} in ${(performance.now() - startedAt).toFixed(0)}ms`);
+      updateJoinLoading("Pod ready — connecting…", "");
+      return `${podUrl.replace(/\/+$/, "")}/realtime`;
+    }
+    if (status !== lastStatus) {
+      log(`pod ${data.pod_id || "?"} status=${status}, waiting…`);
+      lastStatus = status;
+      if (status === "pending") {
+        updateJoinLoading(
+          "Waking up GPU pod…",
+          "Cold starts can take 2–3 minutes. Once warm, future joins are instant.",
+        );
+      }
+    }
+    if (performance.now() > deadline) {
+      throw new Error(`pod for ${appId} did not become ready in time`);
+    }
+    await new Promise((r) => setTimeout(r, 5000));
+  }
 };
 
 const getTemporaryAuthToken = async (appId) => {
@@ -124,7 +207,7 @@ const getTemporaryAuthToken = async (appId) => {
 let _prefetchedToken = null;
 let _prefetchedTokenExpires = 0;
 const _prefetchToken = () => {
-  if (isLocalMode()) return;
+  if (isLocalMode() || ENV_LUCENT_CONTROLLER_URL) return;
   const appId = normalizeAppId(appIdInput.value.trim());
   if (!appId) return;
   getTemporaryAuthToken(appId)
@@ -222,6 +305,7 @@ const stop = () => {
   resetHud();
   resetRoomUI();
   setStatus("");
+  clearLoading();
   joinOverlay.classList.remove("hidden");
 };
 
@@ -260,10 +344,17 @@ const ensurePeer = async (iceServers) => {
 
   pc.ontrack = (event) => {
     log(`Track received: ${event.track?.kind || "unknown"}`);
+    updateVideoLoading("Buffering first frame…");
     const stream = event.streams && event.streams[0]
       ? event.streams[0]
       : new MediaStream([event.track]);
     remoteVideo.srcObject = stream;
+    // Clear the spinner once the first frame actually paints.
+    remoteVideo.addEventListener(
+      "playing",
+      () => { videoLoadingEl.hidden = true; },
+      { once: true },
+    );
     if (remoteFpsStop) {
       remoteFpsStop();
     }
@@ -599,7 +690,12 @@ const connectWs = (wsUrl) => {
   ws.onopen = async () => {
     setStatus("Connecting\u2026");
     log("WebSocket open.");
+    // Join overlay fades out; swap to the video-stage spinner until the
+    // first remote frame actually paints (WebRTC negotiation takes a
+    // couple seconds on top of the ws handshake).
     joinOverlay.classList.add("hidden");
+    joinLoadingEl.hidden = true;
+    showVideoLoading("Negotiating video stream…");
     sendWs({ type: "join", username: getUsername() });
   };
 
@@ -715,7 +811,8 @@ startBtn.addEventListener("click", async () => {
   started = true;
   startBtn.disabled = true;
   stopBtn.disabled = false;
-  setStatus("Connecting\u2026");
+  setStatus("");
+  showJoinLoading("Connecting…", "");
   logEl.textContent = "";
   resetHud();
 
@@ -729,10 +826,29 @@ startBtn.addEventListener("click", async () => {
   const appId = normalizeAppId(appIdInput.value.trim());
   if (!appId) {
     log("Missing endpoint.");
+    clearLoading();
     stop();
     startBtn.disabled = false;
     stopBtn.disabled = true;
     started = false;
+    return;
+  }
+
+  // Lucent path: controller resolves the current pod URL for this app_id.
+  // No auth token needed — the pod URL itself is the secret.
+  if (ENV_LUCENT_CONTROLLER_URL) {
+    updateJoinLoading("Contacting controller…", "");
+    try {
+      const wsUrl = await resolveLucentPodWsUrl(appId);
+      connectWs(wsUrl);
+    } catch (err) {
+      log(`Failed to resolve pod: ${err.message || err}`);
+      clearLoading();
+      stop();
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      started = false;
+    }
     return;
   }
 
@@ -746,6 +862,7 @@ startBtn.addEventListener("click", async () => {
     }
   } catch (err) {
     log(`Failed to fetch token: ${err.message || err}`);
+    clearLoading();
     stop();
     startBtn.disabled = false;
     stopBtn.disabled = true;
