@@ -143,6 +143,7 @@ class BroadcastSubscriber:
 
 def create_broadcast_track(subscriber: BroadcastSubscriber):
     """Factory: creates an aiortc MediaStreamTrack fed by a subscriber."""
+    import av
     from aiortc.mediastreams import MediaStreamTrack
 
     class BroadcastTrack(MediaStreamTrack):
@@ -151,9 +152,22 @@ def create_broadcast_track(subscriber: BroadcastSubscriber):
         def __init__(self) -> None:
             super().__init__()
             self._sub = subscriber
+            self._first = True
 
         async def recv(self):
-            return await self._sub.recv()
+            frame = await self._sub.recv()
+            # Force the first frame each subscriber sees to be an IDR.
+            # Without this, a late joiner's first packet is a P-frame
+            # referencing a keyframe they never received, and the browser
+            # hangs on "buffering first frame" until PLI recovery (which
+            # often fails under cold-start latency).
+            if self._first:
+                try:
+                    frame.pict_type = av.video.frame.PictureType.I
+                except Exception:
+                    pass
+                self._first = False
+            return frame
 
         def stop(self) -> None:
             super().stop()
