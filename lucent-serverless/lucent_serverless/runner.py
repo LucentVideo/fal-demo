@@ -32,6 +32,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import get_args, get_origin, get_type_hints
 
+import msgpack
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
@@ -77,13 +78,28 @@ def _get_input_model(method):
     return None
 
 
-async def _ws_input_iterator(ws: WebSocket, input_model):
-    """Wrap a WebSocket into an async iterator that yields parsed pydantic models."""
+async def _ws_input_iterator(ws: WebSocket, input_model, fmt: dict):
+    """Wrap a WebSocket into an async iterator that yields parsed pydantic models.
+
+    Accepts either text JSON frames or binary msgpack frames. Records the
+    format of the first frame on `fmt["kind"]` so the sender can mirror it.
+    """
     while True:
         try:
-            raw = await ws.receive_json()
+            message = await ws.receive()
         except WebSocketDisconnect:
             return
+        if message.get("type") == "websocket.disconnect":
+            return
+
+        if message.get("bytes") is not None:
+            raw = msgpack.unpackb(message["bytes"], raw=False)
+            fmt.setdefault("kind", "msgpack")
+        elif message.get("text") is not None:
+            raw = json.loads(message["text"])
+            fmt.setdefault("kind", "json")
+        else:
+            continue
 
         if input_model is not None:
             try:
@@ -119,17 +135,25 @@ def register_realtime_routes(api: FastAPI, instance: App) -> int:
             async def endpoint(ws: WebSocket):
                 await ws.accept()
                 state.connection_opened()
+                fmt: dict = {}
                 try:
-                    inputs = _ws_input_iterator(ws, _input_model)
+                    inputs = _ws_input_iterator(ws, _input_model, fmt)
                     async for output in _handler(inputs):
                         if output is None:
                             continue
                         if hasattr(output, "model_dump"):
-                            await ws.send_json(output.model_dump())
+                            payload = output.model_dump()
                         elif isinstance(output, dict):
-                            await ws.send_json(output)
+                            payload = output
                         else:
                             await ws.send_text(str(output))
+                            continue
+                        # Mirror the client's frame format. Default to msgpack
+                        # if the client hasn't sent anything yet.
+                        if fmt.get("kind", "msgpack") == "msgpack":
+                            await ws.send_bytes(msgpack.packb(payload, use_bin_type=True))
+                        else:
+                            await ws.send_json(payload)
                 except WebSocketDisconnect:
                     pass
                 finally:
