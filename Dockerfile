@@ -1,99 +1,35 @@
-# ── Base: RunPod PyTorch 2.8.0 + CUDA 12.8.1 + Ubuntu 24.04 ──────────
-FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
+# Frontend-only image for Railway. Two stages: node builds the Vite app,
+# then nginx serves the static dist. Railway sets $PORT at runtime and
+# nginx-alpine's template entrypoint substitutes it into the server block.
 
-ENV DEBIAN_FRONTEND=noninteractive
+# ── Build stage ──────────────────────────────────────────────────────
+FROM node:20-alpine AS build
 
-# ── System deps ───────────────────────────────────────────────────────
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        nginx \
-        libgl1 \
-        libglib2.0-0 \
-        curl \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
 
-# ── Python deps (skip torch/torchvision — base image has them) ────────
-# Use /opt/app, not /workspace: RunPod mounts /workspace over the image and hides baked files.
-WORKDIR /opt/app
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
 
-# Install Python deps first for layer caching.
-# Base image may ship distro cryptography without a pip RECORD; overlay a wheel first.
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
-    && pip install --no-cache-dir --ignore-installed cryptography \
-    && pip install --no-cache-dir \
-        fal \
-        aiortc \
-        av \
-        opencv-python \
-        pydantic>=2.0 \
-        ultralytics \
-        pillow \
-        "numpy<2" \
-        insightface \
-        huggingface_hub \
-        gfpgan \
-        transformers
+COPY frontend/ ./
 
-# onnxruntime-gpu for CUDA 12
-RUN pip install --no-cache-dir onnxruntime-gpu \
-        --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
+# Vite inlines VITE_* env vars at build time. On Railway, set
+# VITE_LUCENT_CONTROLLER_URL in the service's variables and expose it to
+# this Dockerfile as a build arg via railway.toml (see deploy notes below).
+ARG VITE_LUCENT_CONTROLLER_URL=""
+ENV VITE_LUCENT_CONTROLLER_URL=${VITE_LUCENT_CONTROLLER_URL}
 
-# cupy-cuda12x for GPU-side post-processing in the face-swap path
-# (replaces the CPU affine warp + mask blur in inswapper paste_back).
-RUN pip install --no-cache-dir cupy-cuda12x
+RUN npm run build
 
-# fal calls _print_python_packages() at startup; some base-image dists have metadata=None → TypeError.
-COPY scripts/patch-fal-app-metadata.py /tmp/patch-fal-app-metadata.py
-RUN python /tmp/patch-fal-app-metadata.py && rm -f /tmp/patch-fal-app-metadata.py
 
-# ── Copy project ──────────────────────────────────────────────────────
-COPY . .
+# ── Runtime: nginx static server ─────────────────────────────────────
+FROM nginx:1.27-alpine
 
-# ── Build frontend ────────────────────────────────────────────────────
-# Container always runs fal --local; frontend must use direct WebSocket, not fal cloud tokens.
-RUN cd frontend && npm ci && VITE_LOCAL_MODE=true npm run build
+COPY --from=build /app/dist /usr/share/nginx/html
 
-# ── Pre-download models at build time ─────────────────────────────────
-ARG HF_TOKEN
-ENV HF_TOKEN=${HF_TOKEN}
-
-# yolov8n — ultralytics auto-downloads on first use, trigger it now
-RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
-
-# insightface buffalo_l + inswapper via our own code
-RUN python -c "\
-from insightface.app import FaceAnalysis; \
-fa = FaceAnalysis(name='buffalo_l'); \
-fa.prepare(ctx_id=-1, det_size=(640, 640)); \
-print('buffalo_l downloaded') \
-"
-RUN python -c "\
-from huggingface_hub import hf_hub_download; \
-import os; \
-path = hf_hub_download( \
-    repo_id='hacksider/deep-live-cam', \
-    filename='inswapper_128_fp16.onnx', \
-    token=os.environ.get('HF_TOKEN'), \
-); \
-print(f'inswapper downloaded to {path}') \
-"
-
-# Clear the build arg so it doesn't leak into the runtime image
-ENV HF_TOKEN=""
-
-# ── cloudflared (Cloudflare Tunnel) ───────────────────────────────────
-RUN curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
-        -o /tmp/cloudflared.deb \
-    && dpkg -i /tmp/cloudflared.deb \
-    && rm -f /tmp/cloudflared.deb
-
-# ── nginx + start script ─────────────────────────────────────────────
-# Replace the base image's nginx.conf entirely (it has its own server blocks that conflict).
-COPY nginx.conf /etc/nginx/nginx.conf
-COPY start.sh /opt/start.sh
-RUN chmod +x /opt/start.sh
-
-EXPOSE 8888
-
-CMD ["/opt/start.sh"]
+# nginx-alpine's entrypoint renders /etc/nginx/templates/*.template via
+# envsubst at container start. Filter to only $PORT so nginx's own
+# variables ($uri, $host, …) pass through unchanged.
+COPY frontend/nginx.conf /etc/nginx/templates/default.conf.template
+ENV NGINX_ENVSUBST_FILTER='^PORT$'
+ENV PORT=8080
+EXPOSE 8080

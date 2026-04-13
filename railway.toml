@@ -1,0 +1,12 @@
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+# Expose VITE_* vars to the Docker build. Vite inlines them into the JS
+# bundle at build time, so any change here requires a redeploy.
+[build.args]
+VITE_LUCENT_CONTROLLER_URL = "${{VITE_LUCENT_CONTROLLER_URL}}"
+
+[deploy]
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
