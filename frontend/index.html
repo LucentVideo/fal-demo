@@ -27,7 +27,7 @@
           <input
             id="appId"
             type="hidden"
-            value="myuser/multi-perception-webrtc"
+            value="multi-perception-webrtc"
           />
           <div class="join-content">
             <div class="field">
@@ -41,7 +41,18 @@
             </div>
             <button id="startBtn">Join</button>
             <div class="status" id="status"></div>
+            <div class="join-loading" id="joinLoading" hidden>
+              <div class="spinner" aria-hidden="true"></div>
+              <div class="loading-stage" id="loadingStage">Preparing…</div>
+              <div class="loading-hint" id="loadingHint"></div>
+            </div>
           </div>
+        </div>
+
+        <!-- Video-stage spinner: shown after join overlay hides, until first frame. -->
+        <div class="video-loading" id="videoLoading" hidden>
+          <div class="spinner" aria-hidden="true"></div>
+          <div class="loading-stage" id="videoLoadingStage">Establishing video…</div>
         </div>
 
         <!-- Arena content (visible after join) -->

@@ -1,20 +1,31 @@
-"""Multi-perception WebRTC on lucent-serverless.
+"""Multi-perception WebRTC on fal Serverless.
 
-Port of ``app_fal.py`` to the lucent-serverless runtime. The realtime
-handler body is byte-identical — lucent's ``@ls.realtime`` mirrors fal's
-``AsyncIterator[PydanticModel]`` contract — so only the App class config
-and imports differ.
+Three perceptual models (YOLOv8n, Depth Anything V2 Small, SegFormer-b0)
+co-located on a single warm runner, driving a WebRTC webcam stream.
 
-Ported pieces:
+This file is a minimal, surgical extension of the upstream
+``fal_demos/video/yolo_webcam_webrtc/yolo.py`` example:
 
-* ``fal.App`` → ``ls.App`` with class-attribute config (``app_id``,
-  ``compute_type``, ``machine_type`` using the RunPod GPU id, etc.).
-* ``requirements`` trimmed: the lucent GPU base image already bakes
-  torch/torchvision/opencv-python/pydantic/pillow/numpy/transformers/
-  huggingface_hub/onnxruntime-gpu/cupy-cuda12x, so we only install the
-  WebRTC-specific extras here.
-* ``local_python_modules = ["core"]`` is not needed — lucent tars and
-  uploads the entire source directory, so ``core/`` ships automatically.
+* Same ``@fal.realtime("/realtime", buffering=5)`` signaling handler shape.
+* Same Metered-TURN ICE bootstrap.
+* Same ``aiortc`` peer-connection lifecycle and shutdown hygiene.
+
+The three extensions, each small and isolated:
+
+1. ``setup()`` loads three models and runs a black-frame warmup on each so
+   the first user-visible frame is not paying cold-compile tax.
+2. ``LayerToggleInput`` is added to the discriminated union of realtime
+   inputs, and ``TimingOutput`` is added to the outputs. The existing
+   signaling WebSocket carries both, mirroring the control-extension
+   pattern already used by ``fal_demos/video/matrix_webrtc/matrix.py``.
+3. The custom ``MultiPerceptionTrack`` replaces upstream's ``YOLOTrack``.
+   It runs the models sequentially, lazily by layer, times each call,
+   and pushes throttled ``TimingOutput`` messages into the signaling
+   handler's outgoing queue for the frontend HUD.
+
+Co-location, not parallelism, is the whole point: the three models are
+CUDA-bound on the same GPU and would serialize on the same stream under
+``asyncio.gather`` regardless — see ``notes/decisions.md``.
 """
 
 from __future__ import annotations
@@ -24,7 +35,7 @@ import logging
 from contextlib import suppress
 from typing import Annotated, AsyncIterator, Literal
 
-import lucent_serverless as ls
+import fal
 
 log = logging.getLogger("app")
 log.setLevel(logging.DEBUG)
@@ -235,38 +246,42 @@ class RealtimeOutput(RootModel):
     root: RealtimeOutputMessage
 
 
-# ---------- The lucent App -----------------------------------------------
+# ---------- The fal.App --------------------------------------------------
 
-class MultiPerceptionWebRTC(ls.App):
-    app_id = "multi-perception-webrtc"
-    compute_type = "GPU"
-    # Full RunPod GPU display name (the REST API rejects short forms).
-    # The lucent GPU base image is built on runpod/pytorch cu128 → pairs
-    # with H100s. See https://docs.runpod.io/api-reference/pods/POST/pods.
-    machine_type = "NVIDIA H100 80GB HBM3"
-    cloud_type = "SECURE"
-    container_disk_gb = 40
-    keep_alive = 300
-    min_concurrency = 0
-    max_concurrency = 4
-
+class MultiPerceptionWebRTC(
+    fal.App,
+    keep_alive=300,
+    min_concurrency=0,
+    max_concurrency=4,
+    name="multi-perception-webrtc",
+):
+    # Mirrors upstream yolo_webcam_webrtc/yolo.py machine choice. Downgrading
+    # to GPU-A100 is defensible (see README + notes/decisions.md) but we
+    # match upstream here for zero-deviation on the canonical axis.
+    machine_type = "GPU-H100"
     TURN_EXPIRY_SECONDS = 600
 
-    # Only the extras the base GPU image doesn't already have.
-    # Base already bakes: torch, torchvision, opencv-python, pydantic,
-    # pillow, numpy<2, transformers, huggingface_hub, onnxruntime-gpu,
-    # cupy-cuda12x (see lucent-serverless/images/gpu/Dockerfile).
+    local_python_modules = ["core"]
+
     requirements = [
+        # Transport + WebRTC stack — match upstream yolo.py exactly.
         "aiortc",
         "av",
+        "opencv-python",
+        "pydantic",
         "ultralytics",
+        "torch==2.6.0",
+        "torchvision==0.21.0",
+        "pillow",
+        "numpy<2",  # ultralytics + torch 2.6 still prefer numpy 1.x
+        # Face swap stack
         "insightface",
+        "onnxruntime-gpu",
+        "huggingface_hub",
         "gfpgan",
+        "--extra-index-url",
+        "https://download.pytorch.org/whl/cu124",
     ]
-
-    # Only ship these — the repo root has frontend/, gfpgan/ weights,
-    # upstream-fal-demos/, etc. that the pod doesn't need.
-    include = ["app.py", "core"]
 
     # ------------------------------------------------------------------
     # setup() — loads models, warms each, creates the shared Room.
@@ -293,12 +308,14 @@ class MultiPerceptionWebRTC(ls.App):
         if missing:
             raise RuntimeError(
                 f"Missing required Metered TURN env vars: {', '.join(missing)}. "
-                "Set them via the controller env or .env before starting the realtime app."
+                "Set them via `fal secrets set` or .env before starting the realtime app."
             )
 
-        # On lucent pods user code lands in /opt/app (GPU) or /app (CPU);
-        # we keep the yolov8n.pt path flexible via env var.
-        yolo_weights = os.getenv("YOLO_MODEL_PATH", "yolov8n.pt")
+        fal_path = "/data/yolov8n.pt"
+        yolo_weights = os.getenv(
+            "YOLO_MODEL_PATH",
+            fal_path if os.path.exists(fal_path) else "yolov8n.pt",
+        )
 
         device = detect_device()
         print(f"setup: device={device}, yolo_weights={yolo_weights}")
@@ -313,7 +330,7 @@ class MultiPerceptionWebRTC(ls.App):
 
         self.room = Room(yolo=yolo, face_swapper=face_swapper)
 
-        self._runner_id = os.environ.get("LUCENT_APP_ID") or str(uuid.uuid4())[:8]
+        self._runner_id = os.environ.get("FAL_RUNNER_ID") or str(uuid.uuid4())[:8]
         self._loaded_models = [
             "yolov8n",
             "insightface-buffalo_l", "inswapper_128_fp16",
@@ -323,7 +340,7 @@ class MultiPerceptionWebRTC(ls.App):
         self._metered_ice_expires: float = 0.0
 
     # ------------------------------------------------------------------
-    # Metered TURN bootstrap — identical to app_fal.py.
+    # Metered TURN bootstrap — copied verbatim from upstream yolo.py.
     # ------------------------------------------------------------------
 
     def _fetch_metered_ice_servers_sync(self) -> list[dict]:
@@ -365,7 +382,7 @@ class MultiPerceptionWebRTC(ls.App):
         body = json.dumps(
             {
                 "expiryInSeconds": self.TURN_EXPIRY_SECONDS,
-                "label": "lucent-multi-perception-webrtc-demo",
+                "label": "fal-multi-perception-webrtc-demo",
             }
         ).encode("utf-8")
         request = urllib.request.Request(
@@ -392,7 +409,7 @@ class MultiPerceptionWebRTC(ls.App):
     # All invocations share self.room for multiplayer state.
     # ------------------------------------------------------------------
 
-    @ls.realtime("/realtime", buffering=5)
+    @fal.realtime("/realtime", buffering=5)
     async def webrtc(
         self, inputs: AsyncIterator[RealtimeInput]
     ) -> AsyncIterator[RealtimeOutput]:
@@ -720,26 +737,10 @@ class MultiPerceptionWebRTC(ls.App):
             await pc.close()
 
 
-# ---------- Local launcher ------------------------------------------------
+# ---------- Local launcher (mirrors upstream yolo.py pattern) -----------
 
 if __name__ == "__main__":
-    import os
-
-    from dotenv import load_dotenv
-
-    load_dotenv()
-
-    # Forward secrets the pod needs at setup() time.
-    pod_env = {
-        k: v
-        for k, v in {
-            "METERED_TURN_SECRET_KEY": os.environ.get("METERED_TURN_SECRET_KEY"),
-            "METERED_TURN_LABEL": os.environ.get("METERED_TURN_LABEL"),
-        }.items()
-        if v
-    }
-
-    info = MultiPerceptionWebRTC.spawn(env=pod_env)
-    print(f"App ID: {info.app_id}")
-    print(f"Realtime endpoint: {info.pod_url}/realtime")
-    print(f"WebSocket URL:     {info.pod_url.replace('https://', 'wss://')}/realtime")
+    info = MultiPerceptionWebRTC.spawn()
+    print(f"App ID: {info.application}")
+    print(f"Realtime endpoint: {info.application}/realtime")
+    info.wait()

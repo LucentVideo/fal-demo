@@ -503,9 +503,7 @@ class Room:
                         yolo_out = await loop.run_in_executor(
                             self._executor, self._yolo, img,
                         )
-                        annotated = compose_frame(
-                            img, layer="detection", yolo=yolo_out,
-                        )
+                        annotated = compose_frame(img, yolo=yolo_out)
                     elapsed = (_time.perf_counter() - s) * 1000.0
                 except Exception:
                     annotated = img

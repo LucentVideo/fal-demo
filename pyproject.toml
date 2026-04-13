@@ -33,3 +33,6 @@ dependencies = [
 
 [tool.fal]
 # placeholder for any fal-cli config that the CLI picks up
+
+[tool.uv.workspace]
+members = ["lucent-serverless", "lucent-serverless-controller"]
