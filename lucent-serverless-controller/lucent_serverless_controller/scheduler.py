@@ -26,7 +26,13 @@ from .code_store import CODE_DIR
 log = logging.getLogger(__name__)
 
 POLL_INTERVAL = 5
-MAX_FAILED_POLLS = 5
+
+# Before marking dead we wait much longer: GPU apps can take several
+# minutes to boot (deps install + model downloads + setup warmup). During
+# this boot grace window we ignore /health failures. After grace, a
+# smaller threshold catches actually-unhealthy pods.
+BOOT_GRACE_SEC = 600  # 10 minutes
+MAX_FAILED_POLLS_AFTER_GRACE = 5
 
 
 # ── Spawn ─────────────────────────────────────────────────────────────
@@ -79,23 +85,36 @@ def _poll_pod(pod: dict) -> None:
     """Poll a single pod's /health and update the DB."""
     url = pod["url"] or pod_proxy_url(pod["pod_id"])
 
+    age = int(time.time()) - pod["started_at"]
+    in_grace = age < BOOT_GRACE_SEC
+
+    def _maybe_mark_dead(reason: str) -> None:
+        failed = db.increment_failed_polls(pod["pod_id"])
+        if in_grace:
+            # Still booting — don't kill. Log every 10 failed polls so
+            # we can see it in the controller logs if it gets stuck.
+            if failed % 10 == 0:
+                log.info(
+                    "pod %s still booting (%ds old, %d failed polls, %s)",
+                    pod["pod_id"], age, failed, reason,
+                )
+            return
+        if failed >= MAX_FAILED_POLLS_AFTER_GRACE:
+            log.warning(
+                "pod %s %s after grace period (%d polls), marking dead",
+                pod["pod_id"], reason, failed,
+            )
+            db.set_pod_status(pod["pod_id"], "dead")
+
     try:
         with httpx.Client(timeout=5.0) as c:
             resp = c.get(f"{url}/health")
     except httpx.HTTPError:
-        failed = db.increment_failed_polls(pod["pod_id"])
-        if failed >= MAX_FAILED_POLLS:
-            log.warning("pod %s unreachable (%d polls), marking dead",
-                        pod["pod_id"], failed)
-            db.set_pod_status(pod["pod_id"], "dead")
+        _maybe_mark_dead("unreachable")
         return
 
     if resp.status_code != 200:
-        failed = db.increment_failed_polls(pod["pod_id"])
-        if failed >= MAX_FAILED_POLLS:
-            log.warning("pod %s unhealthy (%d polls), marking dead",
-                        pod["pod_id"], failed)
-            db.set_pod_status(pod["pod_id"], "dead")
+        _maybe_mark_dead(f"unhealthy ({resp.status_code})")
         return
 
     data = resp.json()

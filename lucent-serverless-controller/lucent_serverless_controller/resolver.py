@@ -53,7 +53,19 @@ def resolve(app_id: str):
             "pod_id": pod["pod_id"],
         }
 
-    # 3. Nothing alive → spawn and return pending.
+    # 3. Rate-limit: if we spawned *any* pod for this app in the last
+    # 60s (even one that's already marked dead), don't spawn another.
+    # Belt-and-braces against pathological scheduler behavior.
+    recent_cutoff = int(time.time()) - 60
+    for pod in db.pods_by_app_and_status(app_id, ["pending", "ready", "dead"]):
+        if pod["started_at"] > recent_cutoff:
+            return {
+                "status": "pending",
+                "pod_url": pod["url"],
+                "pod_id": pod["pod_id"],
+            }
+
+    # 4. Nothing alive → spawn and return pending.
     log.info("no warm or pending pod for %s, cold-starting", app_id)
     try:
         pod_id = spawn_pod(dict(app))
