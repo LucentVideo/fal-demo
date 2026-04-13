@@ -58,7 +58,10 @@ def resolve(app_id: str):
     try:
         pod_id = spawn_pod(dict(app))
     except RunpodError as e:
-        raise HTTPException(502, f"failed to spawn pod: {e}")
+        # Use 400, not 502: RunPod's proxy replaces 5xx responses with
+        # its own Cloudflare HTML, so the real error wouldn't reach the
+        # client otherwise. This is usually config (bad gpuTypeId etc.).
+        raise HTTPException(400, f"failed to spawn pod: {e}")
     url = pod_proxy_url(pod_id)
     return {"status": "pending", "pod_url": url, "pod_id": pod_id}
 

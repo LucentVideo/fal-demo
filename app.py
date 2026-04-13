@@ -240,9 +240,10 @@ class RealtimeOutput(RootModel):
 class MultiPerceptionWebRTC(ls.App):
     app_id = "multi-perception-webrtc"
     compute_type = "GPU"
-    # RunPod GPU id; the lucent GPU base image is built on runpod/pytorch
-    # cu128 which pairs with H100s.
-    machine_type = "H100 80GB"
+    # Full RunPod GPU display name (the REST API rejects short forms).
+    # The lucent GPU base image is built on runpod/pytorch cu128 → pairs
+    # with H100s. See https://docs.runpod.io/api-reference/pods/POST/pods.
+    machine_type = "NVIDIA H100 80GB HBM3"
     cloud_type = "SECURE"
     container_disk_gb = 40
     keep_alive = 300
