@@ -2,7 +2,7 @@ name: Build lucent-base-cpu
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/custom-serverless]
     paths:
       - '.github/workflows/build-lucent-base-cpu.yml'
       - 'lucent-serverless/images/cpu/**'

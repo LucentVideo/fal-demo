@@ -2,7 +2,7 @@ name: Build lucent-base-gpu
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/custom-serverless]
     paths:
       - '.github/workflows/build-lucent-base-gpu.yml'
       - 'lucent-serverless/images/gpu/**'

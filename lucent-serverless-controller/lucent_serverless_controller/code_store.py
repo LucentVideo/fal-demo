@@ -44,3 +44,14 @@ async def download_code(app_id: str):
     if not path.exists():
         raise HTTPException(404, f"no code uploaded for {app_id!r}")
     return FileResponse(path, media_type="application/gzip", filename=f"{app_id}.tar.gz")
+
+
+def delete_code(app_id: str) -> bool:
+    """Remove the uploaded code tarball for an app. Returns True if a file was deleted."""
+    path = CODE_DIR / f"{app_id}.tar.gz"
+    try:
+        path.unlink()
+        log.info("deleted code tarball for %s", app_id)
+        return True
+    except FileNotFoundError:
+        return False
