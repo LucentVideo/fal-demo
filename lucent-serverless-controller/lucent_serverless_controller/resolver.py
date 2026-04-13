@@ -18,6 +18,7 @@ from lucent_serverless.runpod_client import (
 )
 
 from . import db
+from .code_store import delete_code
 from .scheduler import spawn_pod
 
 log = logging.getLogger(__name__)
@@ -144,11 +145,17 @@ def remove_app(app_id: str):
 
     if not db.delete_app(app_id):
         raise HTTPException(404, f"unknown app_id {app_id!r}")
+    code_removed = delete_code(app_id)
     log.info(
-        "deleted app %s (terminated=%d, failed=%d)",
-        app_id, len(terminated), len(failed),
+        "deleted app %s (terminated=%d, failed=%d, code_removed=%s)",
+        app_id, len(terminated), len(failed), code_removed,
     )
-    return {"ok": True, "terminated": terminated, "failed_to_terminate": failed}
+    return {
+        "ok": True,
+        "terminated": terminated,
+        "failed_to_terminate": failed,
+        "code_removed": code_removed,
+    }
 
 
 # ── Pod visibility ────────────────────────────────────────────────────

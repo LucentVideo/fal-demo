@@ -2052,6 +2052,7 @@ source = { editable = "lucent-serverless" }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "msgpack" },
     { name = "python-dotenv" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "websockets" },
@@ -2061,6 +2062,7 @@ dependencies = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<0.120" },
     { name = "httpx", specifier = ">=0.27,<0.30" },
+    { name = "msgpack", specifier = ">=1.0,<2.0" },
     { name = "python-dotenv", specifier = ">=1.0,<2.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<0.35" },
     { name = "websockets", specifier = ">=13,<15" },
