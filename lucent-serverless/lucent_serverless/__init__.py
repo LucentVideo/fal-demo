@@ -26,12 +26,8 @@ import tarfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-# The controller runs as a persistent CPU pod on RunPod.
-# Override via LUCENT_CONTROLLER_URL env var.
-CONTROLLER_URL: str = os.environ.get(
-    "LUCENT_CONTROLLER_URL",
-    "https://dxdfhdmmgl2wtf-8000.proxy.runpod.net",
-)
+# Set via LUCENT_CONTROLLER_URL env var, or pass controller_url= to any call.
+CONTROLLER_URL: str = os.environ.get("LUCENT_CONTROLLER_URL", "")
 
 
 class SpawnInfo:
