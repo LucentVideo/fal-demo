@@ -2,12 +2,12 @@ name: Build lucent-base-gpu
 
 on:
   push:
-    branches: [main, feat/custom-serverless]
+    branches: [main]
     paths:
-      - '.github/workflows/build-lucent-base-gpu.yml'
-      - 'lucent-serverless/images/gpu/**'
-      - 'lucent-serverless/lucent_serverless/**'
-      - 'lucent-serverless/pyproject.toml'
+      - ".github/workflows/build-lucent-base-gpu.yml"
+      - "lucent-serverless/images/gpu/**"
+      - "lucent-serverless/lucent_serverless/**"
+      - "lucent-serverless/pyproject.toml"
 
 env:
   IMAGE: raylightdimi/lucent-base-gpu

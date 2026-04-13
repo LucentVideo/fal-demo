@@ -2,11 +2,11 @@ name: Build lucent-controller
 
 on:
   push:
-    branches: [feat/custom-serverless]
+    branches: [main]
     paths:
-      - '.github/workflows/build-lucent-controller.yml'
-      - 'lucent-serverless-controller/**'
-      - 'lucent-serverless/lucent_serverless/**'
+      - ".github/workflows/build-lucent-controller.yml"
+      - "lucent-serverless-controller/**"
+      - "lucent-serverless/lucent_serverless/**"
 
 env:
   IMAGE: raylightdimi/lucent-serverless-controller
