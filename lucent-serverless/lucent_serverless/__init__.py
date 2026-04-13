@@ -177,7 +177,7 @@ def _headers(api_key: str | None = None) -> dict[str, str]:
 
 
 def _controller_url(override: str | None = None) -> str:
-    url = override or CONTROLLER_URL
+    url = override or os.environ.get("LUCENT_CONTROLLER_URL") or CONTROLLER_URL
     if not url:
         raise RuntimeError(
             "No controller URL. Set LUCENT_CONTROLLER_URL env var "
