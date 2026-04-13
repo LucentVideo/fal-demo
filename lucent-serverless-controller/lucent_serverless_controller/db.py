@@ -286,6 +286,10 @@ def insert_job(
                (job_id, app_id, status, input, webhook_url, created_at, ttl_sec)
                VALUES (?, ?, 'pending', ?, ?, ?, ?)""",
             (job_id, app_id, input_json, webhook_url, now, ttl_sec),
+        )
+        _conn().commit()
+
+
 # ── Pod history ──────────────────────���───────────────────────────────
 
 def insert_pod_history(pod_id: str, app_id: str) -> None:
@@ -347,6 +351,10 @@ def fail_job(job_id: str, error_str: str) -> None:
             """UPDATE jobs SET status = 'failed', error = ?, completed_at = ?
                WHERE job_id = ?""",
             (error_str, int(time.time()), job_id),
+        )
+        _conn().commit()
+
+
 def update_pod_boot_timings(pod_id: str, timings: dict) -> None:
     with _write_lock:
         ready_at = timings.get("ready_at")
@@ -416,6 +424,9 @@ def expire_stale_jobs() -> int:
 def recent_jobs(limit: int = 50) -> list[sqlite3.Row]:
     return _conn().execute(
         "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
+    ).fetchall()
+
+
 def boot_timings_recorded(pod_id: str) -> bool:
     row = _conn().execute(
         "SELECT 1 FROM pod_history WHERE pod_id = ? AND ready_at IS NOT NULL", (pod_id,)
