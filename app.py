@@ -263,6 +263,10 @@ class MultiPerceptionWebRTC(ls.App):
         "gfpgan",
     ]
 
+    # Only ship these — the repo root has frontend/, gfpgan/ weights,
+    # upstream-fal-demos/, etc. that the pod doesn't need.
+    include = ["app.py", "core"]
+
     # ------------------------------------------------------------------
     # setup() — loads models, warms each, creates the shared Room.
     # ------------------------------------------------------------------

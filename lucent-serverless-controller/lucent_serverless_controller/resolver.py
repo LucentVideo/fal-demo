@@ -14,7 +14,6 @@ from pydantic import BaseModel
 from lucent_serverless.runpod_client import (
     RunpodError,
     pod_proxy_url,
-    wait_until_ready,
 )
 
 from . import db
@@ -23,10 +22,14 @@ from .scheduler import spawn_pod
 log = logging.getLogger(__name__)
 router = APIRouter()
 
-RESOLVE_TIMEOUT = 300.0
-
 
 # ── /resolve ──────────────────────────────────────────────────────────
+#
+# Non-blocking: always returns immediately. The controller's scheduler
+# loop promotes pending pods to ready when their /health comes up, so
+# the client just polls /resolve until status == "ready".
+#
+# This dodges RunPod's ~100s Cloudflare proxy timeout.
 
 @router.get("/resolve")
 def resolve(app_id: str):
@@ -34,30 +37,29 @@ def resolve(app_id: str):
     if not app:
         raise HTTPException(404, f"unknown app_id {app_id!r}")
 
-    # Try to find a warm pod with room (pack hot: fullest first)
-    candidates = db.pods_by_app_and_status(app_id, ["ready"])
-    for pod in candidates:
+    # 1. Warm pod with room → return immediately.
+    for pod in db.pods_by_app_and_status(app_id, ["ready"]):
         if pod["active_connections"] < app["max_concurrency"]:
-            return {"pod_url": pod["url"]}
+            return {"status": "ready", "pod_url": pod["url"], "pod_id": pod["pod_id"]}
 
-    # Cold start: spawn and wait
-    log.info("no warm pod for %s, cold-starting", app_id)
+    # 2. Pending pod already booting → tell client to keep waiting.
+    pending = db.pods_by_app_and_status(app_id, ["pending"])
+    if pending:
+        pod = pending[0]
+        return {
+            "status": "pending",
+            "pod_url": pod["url"],
+            "pod_id": pod["pod_id"],
+        }
+
+    # 3. Nothing alive → spawn and return pending.
+    log.info("no warm or pending pod for %s, cold-starting", app_id)
     try:
         pod_id = spawn_pod(dict(app))
     except RunpodError as e:
         raise HTTPException(502, f"failed to spawn pod: {e}")
-
     url = pod_proxy_url(pod_id)
-    try:
-        wait_until_ready(pod_id, timeout=RESOLVE_TIMEOUT)
-    except TimeoutError:
-        raise HTTPException(503, f"pod {pod_id} did not become ready within {RESOLVE_TIMEOUT:.0f}s")
-    except RunpodError as e:
-        raise HTTPException(502, f"pod {pod_id} failed: {e}")
-
-    db.promote_pod(pod_id, url)
-    log.info("cold-started pod %s for %s", pod_id, app_id)
-    return {"pod_url": url}
+    return {"status": "pending", "pod_url": url, "pod_id": pod_id}
 
 
 # ── App CRUD ──────────────────────────────────────────────────────────

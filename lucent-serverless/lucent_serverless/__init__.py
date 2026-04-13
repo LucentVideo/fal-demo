@@ -67,6 +67,11 @@ class App:
     # Dependencies — installed at boot (like fal's requirements list)
     requirements: list[str] = []
 
+    # Only tar these top-level entries from source_dir. If empty, ship
+    # everything (minus common junk). Analogous to fal's
+    # local_python_modules but also accepts files like 'app.py'.
+    include: list[str] = []
+
     def setup(self) -> None:
         """Override to load models. Runs once per pod boot, before serving."""
 
@@ -103,6 +108,7 @@ class App:
         upload_code(
             app_id, source_dir,
             requirements=cls.requirements or None,
+            include=cls.include or None,
             controller_url=controller_url, api_key=api_key,
         )
 
@@ -191,19 +197,35 @@ def deploy(
     if resp.status_code != 200:
         raise RuntimeError(f"deploy failed ({resp.status_code}): {resp.text}")
 
-    print(f"deployed {app_id} -> {app_cls.image_ref}")
+    print(f"deployed {app_id} -> {image_ref}")
     print(f"resolve with: ls.resolve({app_id!r})")
 
 
-def _tar_directory(directory: Path, requirements: list[str] | None = None) -> bytes:
+def _tar_directory(
+    directory: Path,
+    requirements: list[str] | None = None,
+    include: list[str] | None = None,
+) -> bytes:
     """Create a tar.gz of the directory contents (not the directory itself).
 
     If requirements is provided, a requirements.txt is generated and
     injected into the tarball (overriding any existing one).
+    If include is provided, only those top-level names from the
+    directory are packaged (instead of iterating the whole dir).
     """
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for item in sorted(directory.iterdir()):
+        if include:
+            items = [directory / name for name in include]
+            missing = [p for p in items if not p.exists()]
+            if missing:
+                raise ValueError(
+                    f"include paths not found in {directory}: "
+                    f"{[p.name for p in missing]}"
+                )
+        else:
+            items = sorted(directory.iterdir())
+        for item in items:
             # Skip common junk
             if item.name in {"__pycache__", ".git", ".venv", "node_modules", ".env"}:
                 continue
@@ -228,6 +250,7 @@ def upload_code(
     source_dir: str | Path,
     *,
     requirements: list[str] | None = None,
+    include: list[str] | None = None,
     controller_url: str | None = None,
     api_key: str | None = None,
 ) -> None:
@@ -238,7 +261,7 @@ def upload_code(
     if not source.is_dir():
         raise ValueError(f"{source} is not a directory")
 
-    data = _tar_directory(source, requirements=requirements)
+    data = _tar_directory(source, requirements=requirements, include=include)
     url = _controller_url(controller_url)
     with httpx.Client(timeout=60.0) as c:
         resp = c.put(
@@ -258,26 +281,50 @@ def upload_code(
 def resolve(
     app_id: str,
     *,
+    timeout: float = 600.0,
+    poll_interval: float = 5.0,
     controller_url: str | None = None,
     api_key: str | None = None,
 ) -> str:
-    """Get a pod URL for the given app from the controller.
+    """Get a ready pod URL for the given app from the controller.
 
-    Cold-starts a pod if none are warm. Returns the pod's base URL
-    (e.g. "https://{pod}-8000.proxy.runpod.net").
+    The controller's /resolve endpoint is non-blocking: it returns
+    status="pending" while the pod is still cold-starting, and
+    status="ready" once the scheduler has promoted it. We poll here
+    until ready or timeout.
     """
+    import time
+
     import httpx
 
     url = _controller_url(controller_url)
-    with httpx.Client(timeout=360.0) as c:
-        resp = c.get(
-            f"{url}/resolve",
-            params={"app_id": app_id},
-            headers=_headers(api_key),
-        )
-    if resp.status_code != 200:
-        raise RuntimeError(f"resolve failed ({resp.status_code}): {resp.text}")
-    return resp.json()["pod_url"]
+    headers = _headers(api_key)
+    deadline = time.time() + timeout
+    last_status = None
+
+    with httpx.Client(timeout=15.0) as c:
+        while True:
+            resp = c.get(
+                f"{url}/resolve",
+                params={"app_id": app_id},
+                headers=headers,
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"resolve failed ({resp.status_code}): {resp.text}"
+                )
+            body = resp.json()
+            status = body.get("status", "ready")
+            if status == "ready":
+                return body["pod_url"]
+            if status != last_status:
+                print(f"resolve: pod {body.get('pod_id')} status={status}, waiting...")
+                last_status = status
+            if time.time() > deadline:
+                raise TimeoutError(
+                    f"pod for {app_id!r} did not become ready within {timeout:.0f}s"
+                )
+            time.sleep(poll_interval)
 
 
 @asynccontextmanager
