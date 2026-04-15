@@ -325,6 +325,71 @@ class MultiPerceptionWebRTC(ls.App):
         self._metered_ice_cache: list[dict] | None = None
         self._metered_ice_expires: float = 0.0
 
+        # Pre-warm the TURN network path so the first client connection
+        # doesn't suffer a cold DNS/TURN-allocation timeout inside aioice.
+        self._prewarm_turn()
+
+    # ------------------------------------------------------------------
+    # Pre-warm TURN: resolve DNS + perform a test TURN allocation so that
+    # the first real ICE gathering inside aioice doesn't timeout.
+    # ------------------------------------------------------------------
+
+    def _prewarm_turn(self) -> None:
+        import socket
+        import time
+
+        turn_hosts = [
+            "global.relay.metered.ca",
+            "stun.relay.metered.ca",
+        ]
+        t0 = time.perf_counter()
+
+        # 1. Warm DNS cache for TURN/STUN servers
+        for host in turn_hosts:
+            try:
+                addrs = socket.getaddrinfo(host, 80, socket.AF_UNSPEC, socket.SOCK_DGRAM)
+                print(f"TURN prewarm: DNS {host} → {addrs[0][4][0]} ({len(addrs)} records)")
+            except Exception as e:
+                print(f"TURN prewarm: DNS {host} FAILED: {e}")
+
+        # 2. Mint TURN credentials early and cache them
+        try:
+            servers = self._fetch_metered_ice_servers_sync()
+            self._metered_ice_cache = servers
+            self._metered_ice_expires = time.time() + min(
+                480.0, float(self.TURN_EXPIRY_SECONDS) - 60.0
+            )
+        except Exception as e:
+            print(f"TURN prewarm: credential mint FAILED: {e}")
+            return
+
+        # 3. Make a test TURN allocation to warm the full network path
+        #    (TCP connect + STUN Allocate round-trips). We use a raw
+        #    socket probe — just enough to prime DNS, routing, and any
+        #    NAT/firewall state.
+        turn_servers = [
+            s for s in servers
+            if isinstance(s.get("urls"), str) and s["urls"].startswith("turn:")
+        ]
+        for srv in turn_servers[:1]:
+            url = srv["urls"]
+            try:
+                host_port = url.split("turn:")[1].split("?")[0]
+                host, _, port_str = host_port.rpartition(":")
+                if not host:
+                    host = port_str
+                    port = 3478
+                else:
+                    port = int(port_str)
+                sock = socket.create_connection((host, port), timeout=5)
+                sock.close()
+                print(f"TURN prewarm: TCP probe {host}:{port} OK")
+            except Exception as e:
+                print(f"TURN prewarm: TCP probe FAILED for {url}: {e}")
+
+        elapsed = (time.perf_counter() - t0) * 1000
+        print(f"TURN prewarm: complete in {elapsed:.0f}ms")
+
     # ------------------------------------------------------------------
     # Metered TURN bootstrap — identical to app_fal.py.
     # ------------------------------------------------------------------

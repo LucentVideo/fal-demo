@@ -14,7 +14,8 @@ const ENV_LOCAL_MODE = import.meta.env.VITE_LOCAL_MODE === "true";
 // controller to resolve the current pod for this app_id instead of going
 // through fal. Pod URLs change per cold-start, but the controller URL
 // doesn't — so this env var is safe to bake into the build.
-const ENV_LUCENT_CONTROLLER_URL = import.meta.env.VITE_LUCENT_CONTROLLER_URL || "";
+const ENV_LUCENT_CONTROLLER_URL =
+  import.meta.env.VITE_LUCENT_CONTROLLER_URL || "";
 
 const localModeCheckbox = document.getElementById("localMode");
 const backendUrlInput = document.getElementById("backendUrl");
@@ -133,7 +134,9 @@ const normalizeAppId = (value) => value.replace(/^\/+|\/+$/g, "");
 
 const buildWsUrl = (appId, token) => {
   const normalizedAppId = normalizeAppId(appId);
-  return `wss://fal.run/${normalizedAppId}?fal_jwt_token=${encodeURIComponent(token)}`;
+  return `wss://fal.run/${normalizedAppId}?fal_jwt_token=${encodeURIComponent(
+    token
+  )}`;
 };
 
 const resolveLucentPodWsUrl = async (appId) => {
@@ -144,7 +147,7 @@ const resolveLucentPodWsUrl = async (appId) => {
   while (true) {
     const resp = await fetch(
       `${base}/resolve?app_id=${encodeURIComponent(appId)}`,
-      { method: "GET" },
+      { method: "GET" }
     );
     if (!resp.ok) {
       const body = await resp.text();
@@ -153,8 +156,14 @@ const resolveLucentPodWsUrl = async (appId) => {
     const data = await resp.json();
     const status = data.status || "ready";
     if (status === "ready") {
-      const podUrl = data.pod_url.replace(/^https:/, "wss:").replace(/^http:/, "ws:");
-      log(`resolved pod ${data.pod_id} in ${(performance.now() - startedAt).toFixed(0)}ms`);
+      const podUrl = data.pod_url
+        .replace(/^https:/, "wss:")
+        .replace(/^http:/, "ws:");
+      log(
+        `resolved pod ${data.pod_id} in ${(
+          performance.now() - startedAt
+        ).toFixed(0)}ms`
+      );
       updateJoinLoading("Pod ready — connecting…", "");
       return `${podUrl.replace(/\/+$/, "")}/realtime`;
     }
@@ -164,7 +173,7 @@ const resolveLucentPodWsUrl = async (appId) => {
       if (status === "pending") {
         updateJoinLoading(
           "Waking up GPU pod…",
-          "Cold starts can take 2–3 minutes. Once warm, future joins are instant.",
+          "Cold starts can take 1–2 minutes. Once warm, future joins are instant."
         );
       }
     }
@@ -213,10 +222,13 @@ const _prefetchToken = () => {
   getTemporaryAuthToken(appId)
     .then((tok) => {
       _prefetchedToken = tok;
-      _prefetchedTokenExpires = Date.now() + (TOKEN_EXPIRATION_SECONDS - 10) * 1000;
+      _prefetchedTokenExpires =
+        Date.now() + (TOKEN_EXPIRATION_SECONDS - 10) * 1000;
       log("Token prefetched (ready for instant join)");
     })
-    .catch(() => { /* will retry on click */ });
+    .catch(() => {
+      /* will retry on click */
+    });
 };
 setTimeout(_prefetchToken, 200);
 
@@ -345,15 +357,18 @@ const ensurePeer = async (iceServers) => {
   pc.ontrack = (event) => {
     log(`Track received: ${event.track?.kind || "unknown"}`);
     updateVideoLoading("Buffering first frame…");
-    const stream = event.streams && event.streams[0]
-      ? event.streams[0]
-      : new MediaStream([event.track]);
+    const stream =
+      event.streams && event.streams[0]
+        ? event.streams[0]
+        : new MediaStream([event.track]);
     remoteVideo.srcObject = stream;
     // Clear the spinner once the first frame actually paints.
     remoteVideo.addEventListener(
       "playing",
-      () => { videoLoadingEl.hidden = true; },
-      { once: true },
+      () => {
+        videoLoadingEl.hidden = true;
+      },
+      { once: true }
     );
     if (remoteFpsStop) {
       remoteFpsStop();
@@ -367,17 +382,21 @@ let _earlyStreamPromise = null;
 const _warmCamera = () => {
   if (_earlyStreamPromise) return;
   _earlyStreamPromise = navigator.mediaDevices
-    .getUserMedia({ video: { width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false })
+    .getUserMedia({
+      video: { width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false,
+    })
     .catch(() => null);
 };
 
 const attachLocalStream = async () => {
   if (localStream) return;
-  localStream = (_earlyStreamPromise && await _earlyStreamPromise) ||
-    await navigator.mediaDevices.getUserMedia({
+  localStream =
+    (_earlyStreamPromise && (await _earlyStreamPromise)) ||
+    (await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 1920 }, height: { ideal: 1080 } },
       audio: false,
-    });
+    }));
   _earlyStreamPromise = null;
   localVideo.srcObject = localStream;
   localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
@@ -433,14 +452,18 @@ const startFpsCounter = (video, outputEl, resEl) => {
       lastTime = timestamp;
     }
     if (video.requestVideoFrameCallback) {
-      video.requestVideoFrameCallback((_, metadata) => update(metadata.expectedDisplayTime || performance.now()));
+      video.requestVideoFrameCallback((_, metadata) =>
+        update(metadata.expectedDisplayTime || performance.now())
+      );
     } else {
       rafId = requestAnimationFrame(update);
     }
   };
 
   if (video.requestVideoFrameCallback) {
-    video.requestVideoFrameCallback((_, metadata) => update(metadata.expectedDisplayTime || performance.now()));
+    video.requestVideoFrameCallback((_, metadata) =>
+      update(metadata.expectedDisplayTime || performance.now())
+    );
   } else {
     rafId = requestAnimationFrame(update);
   }
@@ -467,8 +490,12 @@ const startBitrateMonitor = () => {
         if (lastOutBytes !== null && lastOutTime !== null) {
           const bytes = report.bytesSent;
           const time = report.timestamp;
-          const bitrate = ((bytes - lastOutBytes) * 8) / ((time - lastOutTime) / 1000);
-          localBitrateEl.textContent = `Up: ${Math.max(0, bitrate / 1_000_000).toFixed(2)} Mbps`;
+          const bitrate =
+            ((bytes - lastOutBytes) * 8) / ((time - lastOutTime) / 1000);
+          localBitrateEl.textContent = `Up: ${Math.max(
+            0,
+            bitrate / 1_000_000
+          ).toFixed(2)} Mbps`;
         }
         lastOutBytes = report.bytesSent;
         lastOutTime = report.timestamp;
@@ -477,8 +504,12 @@ const startBitrateMonitor = () => {
         if (lastInBytes !== null && lastInTime !== null) {
           const bytes = report.bytesReceived;
           const time = report.timestamp;
-          const bitrate = ((bytes - lastInBytes) * 8) / ((time - lastInTime) / 1000);
-          remoteBitrateEl.textContent = `Down: ${Math.max(0, bitrate / 1_000_000).toFixed(2)} Mbps`;
+          const bitrate =
+            ((bytes - lastInBytes) * 8) / ((time - lastInTime) / 1000);
+          remoteBitrateEl.textContent = `Down: ${Math.max(
+            0,
+            bitrate / 1_000_000
+          ).toFixed(2)} Mbps`;
         }
         lastInBytes = report.bytesReceived;
         lastInTime = report.timestamp;
@@ -504,7 +535,7 @@ const sendWs = (payload) => {
   const encoded = encode(payload);
   const buffer = encoded.buffer.slice(
     encoded.byteOffset,
-    encoded.byteOffset + encoded.byteLength,
+    encoded.byteOffset + encoded.byteLength
   );
   ws.send(buffer);
 };
@@ -546,18 +577,25 @@ const updateRoomUI = (state) => {
   roomPanel.style.display = "";
 
   const count = state.peers.length;
-  roomStatusEl.textContent = `${count} ${count !== 1 ? "people" : "person"} here`;
-  remoteVideoTitle.textContent =
-    count > 0 ? `Everyone (${count})` : "Everyone";
+  roomStatusEl.textContent = `${count} ${
+    count !== 1 ? "people" : "person"
+  } here`;
+  remoteVideoTitle.textContent = count > 0 ? `Everyone (${count})` : "Everyone";
 
   if (state.face_override_active) {
-    applyFaceOverrideUI(true, state.face_override_by, state.face_override_image || null);
+    applyFaceOverrideUI(
+      true,
+      state.face_override_by,
+      state.face_override_image || null
+    );
   }
 
   participantsEl.innerHTML = state.peers
     .map((p) => {
       const isMe = p.peer_id === myPeerId;
-      const classes = ["participant", isMe ? "me" : ""].filter(Boolean).join(" ");
+      const classes = ["participant", isMe ? "me" : ""]
+        .filter(Boolean)
+        .join(" ");
       const label = isMe ? `${p.username} (you)` : p.username;
       const videoDot = p.has_video ? '<span class="video-dot"></span>' : "";
       const faceIcon = p.face_captured
@@ -565,7 +603,9 @@ const updateRoomUI = (state) => {
         : '<span class="face-pending-icon" title="Detecting face…">&#9676;</span>';
       let assignmentTag = "";
       if (shuffleAssignments) {
-        const assignment = shuffleAssignments.find((a) => a.peer_id === p.peer_id);
+        const assignment = shuffleAssignments.find(
+          (a) => a.peer_id === p.peer_id
+        );
         if (assignment) {
           assignmentTag = `<span class="face-assignment">${assignment.assigned_face_of}'s face</span>`;
         }
@@ -671,7 +711,9 @@ const connectWs = (wsUrl) => {
     try {
       let t = performance.now();
       await ensurePeer(pendingIceServers);
-      log(`RTCPeerConnection created in ${(performance.now() - t).toFixed(0)}ms`);
+      log(
+        `RTCPeerConnection created in ${(performance.now() - t).toFixed(0)}ms`
+      );
       t = performance.now();
       await attachLocalStream();
       log(`getUserMedia + addTrack in ${(performance.now() - t).toFixed(0)}ms`);
@@ -714,7 +756,9 @@ const connectWs = (wsUrl) => {
       log(`Room: ${msg.peers.length} player(s)`);
     } else if (msg.type === "iceservers" && !offerSent) {
       pendingIceServers = parseIceServers(msg.iceservers);
-      log(`Using ${pendingIceServers.length} ICE server entries from signaling.`);
+      log(
+        `Using ${pendingIceServers.length} ICE server entries from signaling.`
+      );
       try {
         await ensureOfferSent();
       } catch (err) {
@@ -753,7 +797,9 @@ const connectWs = (wsUrl) => {
       shuffleStatusEl.textContent = "Faces shuffled!";
       triggerShuffleFlash();
       if (roomState) updateRoomUI(roomState);
-      const myAssignment = shuffleAssignments.find((a) => a.peer_id === myPeerId);
+      const myAssignment = shuffleAssignments.find(
+        (a) => a.peer_id === myPeerId
+      );
       if (myAssignment) {
         log(`Shuffle: you got ${myAssignment.assigned_face_of}'s face`);
       }
@@ -893,7 +939,11 @@ const triggerShuffleFlash = () => {
   shuffleFlash.classList.remove("active");
   void shuffleFlash.offsetWidth;
   shuffleFlash.classList.add("active");
-  shuffleFlash.addEventListener("animationend", () => {
-    shuffleFlash.classList.remove("active");
-  }, { once: true });
+  shuffleFlash.addEventListener(
+    "animationend",
+    () => {
+      shuffleFlash.classList.remove("active");
+    },
+    { once: true }
+  );
 };
