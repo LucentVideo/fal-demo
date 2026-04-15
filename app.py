@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import suppress
-from typing import Annotated, AsyncIterator, Literal
+from typing import Annotated, Any, AsyncIterator, Literal, NotRequired, TypedDict
 
 import lucent_serverless as ls
 
@@ -43,6 +43,12 @@ class IceCandidate(BaseModel):
     candidate: str
     sdpMid: str | None = None
     sdpMLineIndex: int | None = None
+
+
+class IceServerConfig(TypedDict):
+    urls: str | list[str]
+    username: NotRequired[str]
+    credential: NotRequired[str]
 
 
 class OfferInput(BaseModel):
@@ -114,7 +120,7 @@ class RealtimeInput(RootModel):
 
 class IceServersOutput(BaseModel):
     type: Literal["iceservers"]
-    iceservers: list[dict]
+    iceservers: list[IceServerConfig]
 
 
 class AnswerOutput(BaseModel):
@@ -246,7 +252,7 @@ class MultiPerceptionWebRTC(ls.App):
     machine_type = "NVIDIA H100 80GB HBM3"
     cloud_type = "SECURE"
     container_disk_gb = 40
-    keep_alive = 300
+    keep_alive = 28800
     min_concurrency = 0
     max_concurrency = 4
 
@@ -322,8 +328,9 @@ class MultiPerceptionWebRTC(ls.App):
             "insightface-buffalo_l", "inswapper_128_fp16",
         ]
         # Minted TURN credentials last TURN_EXPIRY_SECONDS; refresh cache before then.
-        self._metered_ice_cache: list[dict] | None = None
+        self._metered_ice_cache: list[IceServerConfig] | None = None
         self._metered_ice_expires: float = 0.0
+        self._metered_turn_choice_cache: dict[str, str] = {}
 
         # Pre-warm the TURN network path so the first client connection
         # doesn't suffer a cold DNS/TURN-allocation timeout inside aioice.
@@ -367,12 +374,12 @@ class MultiPerceptionWebRTC(ls.App):
         #    (TCP connect + STUN Allocate round-trips). We use a raw
         #    socket probe — just enough to prime DNS, routing, and any
         #    NAT/firewall state.
-        turn_servers = [
-            s for s in servers
-            if isinstance(s.get("urls"), str) and s["urls"].startswith("turn:")
-        ]
-        for srv in turn_servers[:1]:
-            url = srv["urls"]
+        turn_servers: list[str] = []
+        for server in servers:
+            url = server.get("urls")
+            if isinstance(url, str) and url.startswith("turn:"):
+                turn_servers.append(url)
+        for url in turn_servers[:1]:
             try:
                 host_port = url.split("turn:")[1].split("?")[0]
                 host, _, port_str = host_port.rpartition(":")
@@ -394,7 +401,7 @@ class MultiPerceptionWebRTC(ls.App):
     # Metered TURN bootstrap — identical to app_fal.py.
     # ------------------------------------------------------------------
 
-    def _fetch_metered_ice_servers_sync(self) -> list[dict]:
+    def _fetch_metered_ice_servers_sync(self) -> list[IceServerConfig]:
         import json
         import urllib.parse
         import urllib.request
@@ -406,25 +413,26 @@ class MultiPerceptionWebRTC(ls.App):
         credentials_url = f"https://{label}.metered.live/api/v1/turn/credentials"
         credential_url = f"https://{label}.metered.live/api/v1/turn/credential"
 
-        def fetch_ice_servers(api_key: str) -> list[dict]:
+        def fetch_ice_servers(api_key: str) -> list[IceServerConfig]:
             query = urllib.parse.urlencode({"apiKey": api_key})
             join_char = "&" if "?" in credentials_url else "?"
             url = f"{credentials_url}{join_char}{query}"
             with urllib.request.urlopen(url, timeout=5) as response:
                 payload = response.read().decode("utf-8")
             raw_servers = json.loads(payload)
-            servers: list[dict] = []
+            servers: list[IceServerConfig] = []
             for item in raw_servers:
                 urls = item.get("urls")
                 if not urls:
                     continue
-                servers.append(
-                    {
-                        "urls": urls,
-                        "username": item.get("username"),
-                        "credential": item.get("credential", item.get("password")),
-                    }
-                )
+                server: IceServerConfig = {"urls": urls}
+                username = item.get("username")
+                credential = item.get("credential", item.get("password"))
+                if isinstance(username, str):
+                    server["username"] = username
+                if isinstance(credential, str):
+                    server["credential"] = credential
+                servers.append(server)
             return servers
 
         query = urllib.parse.urlencode({"secretKey": secret_key})
@@ -454,6 +462,146 @@ class MultiPerceptionWebRTC(ls.App):
             raise RuntimeError("Metered returned empty ICE server list.")
         print("WebRTC: minted fresh Metered ICE servers")
         return servers
+
+    @staticmethod
+    def _ice_server_identity(server: IceServerConfig) -> tuple[str | None, str | None, str | None]:
+        urls = server.get("urls")
+        url = urls if isinstance(urls, str) else None
+        username = server.get("username")
+        credential = server.get("credential")
+        return (url, username, credential)
+
+    @staticmethod
+    def _parse_ice_server(server: IceServerConfig) -> dict[str, Any] | None:
+        from aiortc.rtcicetransport import parse_stun_turn_uri
+
+        urls = server.get("urls")
+        url_values = urls if isinstance(urls, list) else [urls]
+        for url in url_values:
+            try:
+                return parse_stun_turn_uri(url)
+            except ValueError:
+                continue
+        return None
+
+    def _pick_turn_servers(
+        self, servers: list[IceServerConfig]
+    ) -> tuple[IceServerConfig | None, IceServerConfig | None]:
+        udp_turn = None
+        reliable_turn = None
+        reliable_score = -1
+
+        for server in servers:
+            parsed = self._parse_ice_server(server)
+            if parsed is None or parsed["scheme"] not in ("turn", "turns"):
+                continue
+
+            if parsed["scheme"] == "turn" and parsed["transport"] == "udp" and udp_turn is None:
+                udp_turn = server
+
+            is_reliable = parsed["scheme"] == "turns" or parsed["transport"] == "tcp"
+            if not is_reliable:
+                continue
+
+            score = 0
+            if parsed["scheme"] == "turns":
+                score += 2
+            if parsed["port"] == 443:
+                score += 1
+            if score > reliable_score:
+                reliable_score = score
+                reliable_turn = server
+
+        return udp_turn, reliable_turn
+
+    def _reorder_turn_servers(
+        self, servers: list[IceServerConfig], preferred_turn: IceServerConfig
+    ) -> list[IceServerConfig]:
+        preferred_identity = self._ice_server_identity(preferred_turn)
+        non_turn_servers: list[IceServerConfig] = []
+        remaining_turn_servers: list[IceServerConfig] = []
+        chosen_turn: IceServerConfig | None = None
+
+        for server in servers:
+            parsed = self._parse_ice_server(server)
+            if parsed is None or parsed["scheme"] not in ("turn", "turns"):
+                non_turn_servers.append(server)
+                continue
+
+            if chosen_turn is None and self._ice_server_identity(server) == preferred_identity:
+                chosen_turn = server
+            else:
+                remaining_turn_servers.append(server)
+
+        if chosen_turn is None:
+            return list(servers)
+
+        return non_turn_servers + [chosen_turn] + remaining_turn_servers
+
+    async def _probe_turn_server(self, server: IceServerConfig, timeout: float = 4.0) -> bool:
+        from aioice import turn
+
+        parsed = self._parse_ice_server(server)
+        if parsed is None or parsed["scheme"] not in ("turn", "turns"):
+            return False
+
+        class _ProbeProtocol(asyncio.DatagramProtocol):
+            pass
+
+        probe_transport = None
+        url = server.get("urls")
+        try:
+            probe_transport, _ = await asyncio.wait_for(
+                turn.create_turn_endpoint(
+                    _ProbeProtocol,
+                    server_addr=(parsed["host"], parsed["port"]),
+                    username=server.get("username"),
+                    password=server.get("credential"),
+                    ssl=parsed["scheme"] == "turns",
+                    transport=parsed["transport"],
+                ),
+                timeout=timeout,
+            )
+            log.info(f"TURN probe OK for {url}")
+            return True
+        except Exception as exc:
+            log.warning(f"TURN probe failed for {url}: {type(exc).__name__}: {exc}")
+            return False
+        finally:
+            if probe_transport is not None:
+                with suppress(Exception):
+                    probe_transport.close()
+
+    async def _select_server_ice_servers(
+        self, servers: list[IceServerConfig]
+    ) -> list[IceServerConfig]:
+        # aiortc currently honors only the first TURN entry, so we probe the
+        # active UDP credential once and reorder to a reliable TURN/TLS entry
+        # only when UDP allocation cannot produce a relay candidate.
+        udp_turn, reliable_turn = self._pick_turn_servers(servers)
+        if udp_turn is None or reliable_turn is None:
+            return list(servers)
+
+        choice_key = "|".join(
+            str(part or "") for part in self._ice_server_identity(udp_turn)
+        )
+        cached_choice = self._metered_turn_choice_cache.get(choice_key)
+        if cached_choice == "udp":
+            return list(servers)
+        if cached_choice == "reliable":
+            return self._reorder_turn_servers(servers, reliable_turn)
+
+        udp_ok = await self._probe_turn_server(udp_turn)
+        if udp_ok:
+            self._metered_turn_choice_cache[choice_key] = "udp"
+            return list(servers)
+
+        self._metered_turn_choice_cache[choice_key] = "reliable"
+        log.warning(
+            "TURN transport fallback: UDP allocation failed, preferring %s",
+            reliable_turn.get("urls"),
+        )
+        return self._reorder_turn_servers(servers, reliable_turn)
 
     # ------------------------------------------------------------------
     # The realtime signaling endpoint — one invocation per WebSocket.
@@ -491,14 +639,17 @@ class MultiPerceptionWebRTC(ls.App):
             self._metered_ice_cache is not None
             and now < self._metered_ice_expires
         ):
-            signal_ice_servers = self._metered_ice_cache
+            raw_signal_ice_servers = self._metered_ice_cache
             print("WebRTC: using cached Metered ICE servers")
         else:
-            signal_ice_servers = await asyncio.to_thread(
+            raw_signal_ice_servers = await asyncio.to_thread(
                 self._fetch_metered_ice_servers_sync
             )
-            self._metered_ice_cache = signal_ice_servers
+            self._metered_ice_cache = raw_signal_ice_servers
             self._metered_ice_expires = now + cache_ttl
+        signal_ice_servers = await self._select_server_ice_servers(
+            list(raw_signal_ice_servers)
+        )
         rtc_ice_servers = [
             RTCIceServer(
                 urls=server["urls"],
