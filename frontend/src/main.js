@@ -23,6 +23,7 @@ const appIdInput = document.getElementById("appId");
 const usernameInput = document.getElementById("username");
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
+const pipToggle = document.getElementById("pipToggle");
 const localVideo = document.getElementById("localVideo");
 const remoteVideo = document.getElementById("remoteVideo");
 const remoteVideoTitle = document.getElementById("remoteVideoTitle");
@@ -63,6 +64,9 @@ const loadingStageEl = document.getElementById("loadingStage");
 const loadingHintEl = document.getElementById("loadingHint");
 const videoLoadingEl = document.getElementById("videoLoading");
 const videoLoadingStageEl = document.getElementById("videoLoadingStage");
+const inviteBar = document.getElementById("inviteBar");
+const inviteCopyBtn = document.getElementById("inviteCopyBtn");
+const inviteToast = document.getElementById("inviteToast");
 
 let ws = null;
 let pc = null;
@@ -82,6 +86,74 @@ localModeCheckbox.value = ENV_LOCAL_MODE ? "true" : "";
 backendUrlInput.value = ENV_BACKEND_URL;
 
 const isLocalMode = () => ENV_LOCAL_MODE;
+
+/** Viewport width at or below this uses mobile defaults (self-view off). */
+const PIP_MOBILE_BREAKPOINT_PX = 720;
+const isPipMobileLayout = () =>
+  window.matchMedia(`(max-width: ${PIP_MOBILE_BREAKPOINT_PX}px)`).matches;
+
+const syncPipVisibility = () => {
+  localVideo.classList.toggle("pip-collapsed", !pipToggle.checked);
+};
+
+const initPipToggle = () => {
+  pipToggle.checked = !isPipMobileLayout();
+  syncPipVisibility();
+};
+
+pipToggle.addEventListener("change", syncPipVisibility);
+initPipToggle();
+
+const getInviteUrl = () => window.location.href.replace(/#.*$/, "");
+
+const copyTextWithFallback = (text) => {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.left = "-9999px";
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    return document.execCommand("copy");
+  } finally {
+    document.body.removeChild(ta);
+  }
+};
+
+let inviteToastClear = null;
+const flashInviteCopied = () => {
+  inviteBar.classList.remove("invite-copied-flash");
+  void inviteBar.offsetWidth;
+  inviteBar.classList.add("invite-copied-flash");
+  setTimeout(() => inviteBar.classList.remove("invite-copied-flash"), 900);
+
+  if (inviteToastClear) clearTimeout(inviteToastClear);
+  inviteToast.hidden = false;
+  inviteToast.textContent = "Link copied!";
+  inviteToast.classList.add("invite-toast-visible");
+  inviteToastClear = setTimeout(() => {
+    inviteToast.classList.remove("invite-toast-visible");
+    inviteToast.textContent = "";
+    inviteToast.hidden = true;
+    inviteToastClear = null;
+  }, 1600);
+};
+
+const copyInviteLink = async () => {
+  const url = getInviteUrl();
+  try {
+    await navigator.clipboard.writeText(url);
+  } catch {
+    if (!copyTextWithFallback(url)) {
+      log("Could not copy link.");
+      return;
+    }
+  }
+  flashInviteCopied();
+};
+
+inviteCopyBtn.addEventListener("click", () => copyInviteLink());
 
 const _t0 = performance.now();
 const tlog = (msg) => {
