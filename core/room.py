@@ -202,6 +202,31 @@ def _letterbox(img, target_w: int, target_h: int):
     return cell
 
 
+def _draw_peer_username(cell, username: str, cell_h: int) -> None:
+    """Username overlay on each grid cell; scales with cell height."""
+    import cv2
+
+    if not username:
+        return
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    # Large, readable labels; scales with tile height (solo view gets the cap).
+    font_scale = max(1.45, min(3.6, cell_h * 0.0075))
+    thickness = max(3, min(7, int(round(font_scale * 1.6))))
+    margin = max(12, int(cell_h * 0.045))
+    (_, th), _ = cv2.getTextSize(username, font, font_scale, thickness)
+    y = min(cell.shape[0] - 1, margin + th)
+    cv2.putText(
+        cell,
+        username,
+        (margin, y),
+        font,
+        font_scale,
+        (255, 255, 255),
+        thickness,
+        cv2.LINE_AA,
+    )
+
+
 class Room:
     """Single multiplayer room shared across all WebSocket handlers."""
 
@@ -537,16 +562,7 @@ class Room:
                 model_ms_total += elapsed
 
                 cell = _letterbox(annotated, cell_w, cell_h)
-                cv2.putText(
-                    cell,
-                    peer.username,
-                    (8, 24),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (255, 255, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
+                _draw_peer_username(cell, peer.username, cell_h)
 
                 r, c = divmod(idx, cols)
                 y0, x0 = r * cell_h, c * cell_w
